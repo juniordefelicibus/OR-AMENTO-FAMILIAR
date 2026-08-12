@@ -337,18 +337,22 @@ async function carregarDadosNuvem(usuarioAuth) {
    Retorna { ok, conflito, atualizadoEm } — "conflito" significa que outra sessão salvou primeiro e nada
    foi sobrescrito aqui; quem chamou deve avisar a pessoa e recarregar os dados antes de tentar de novo. */
 async function salvarDadosNuvem(userId, dados, atualizadoEmEsperado) {
-  const agora = nowISO();
-  let query = supabase.from(TABELA_DADOS).update({ dados, atualizado_em: agora }).eq("user_id", userId);
+  // Não mandamos atualizado_em aqui: o gatilho do banco (financas_dados_atualizado_em, no schema.sql) já
+  // define esse valor sozinho a cada UPDATE, usando o relógio do próprio Postgres. Se calculássemos esse
+  // horário aqui no navegador e confiássemos nele, ele nunca bateria exatamente com o que o gatilho grava —
+  // e a próxima comparação abaixo sempre acusaria "conflito" por engano, mesmo sem nenhuma outra aba/aparelho.
+  let query = supabase.from(TABELA_DADOS).update({ dados }).eq("user_id", userId);
   if (atualizadoEmEsperado) query = query.eq("atualizado_em", atualizadoEmEsperado);
   const { data, error } = await query.select("atualizado_em");
   if (error) {
     console.error("Falha ao sincronizar com a nuvem:", error);
     return { ok: false, conflito: false, atualizadoEm: atualizadoEmEsperado };
   }
-  if (atualizadoEmEsperado && (!data || data.length === 0)) {
+  if (!data || data.length === 0) {
     return { ok: false, conflito: true, atualizadoEm: atualizadoEmEsperado };
   }
-  return { ok: true, conflito: false, atualizadoEm: agora };
+  // Usa o valor que realmente ficou gravado (devolvido pelo próprio Postgres), não um cálculo local.
+  return { ok: true, conflito: false, atualizadoEm: data[0].atualizado_em };
 }
 
 /* ============================================================
