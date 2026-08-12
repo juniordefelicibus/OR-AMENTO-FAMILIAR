@@ -225,8 +225,8 @@ function seedDB() {
   return {
     usuarios: [
       {
-        id: adminId, nome: "Usuário Demonstração", email: "juniordefelicibus@gmail.com",
-        senha: "civil4000601", foto: null, dataCadastro: nowISO(), ultimoAcesso: null, status: "ativo"
+        id: adminId, nome: "Usuário Demonstração", email: "",
+        senha: null, foto: null, dataCadastro: nowISO(), ultimoAcesso: null, status: "ativo"
       }
     ],
     contas: [],
@@ -313,11 +313,11 @@ const TABELA_DADOS = "financas_dados";
 async function carregarDadosNuvem(usuarioAuth) {
   const { data, error } = await supabase
     .from(TABELA_DADOS)
-    .select("dados")
+    .select("dados, atualizado_em")
     .eq("user_id", usuarioAuth.id)
     .maybeSingle();
   if (error) throw error;
-  if (data?.dados) return withDefaults(data.dados);
+  if (data?.dados) return { dados: withDefaults(data.dados), atualizadoEm: data.atualizado_em };
 
   const seeded = seedDB();
   seeded.categorias = seeded.categorias.map(({ subcategoriasSeed, ...c }) => c);
@@ -325,14 +325,30 @@ async function carregarDadosNuvem(usuarioAuth) {
     id: usuarioAuth.id, nome: usuarioAuth.user_metadata?.nome || usuarioAuth.email.split("@")[0],
     email: usuarioAuth.email, senha: null, foto: null, dataCadastro: nowISO(), ultimoAcesso: nowISO(), status: "ativo"
   }];
-  const { error: erroInsert } = await supabase.from(TABELA_DADOS).insert({ user_id: usuarioAuth.id, dados: seeded });
+  const agora = nowISO();
+  const { error: erroInsert } = await supabase.from(TABELA_DADOS).insert({ user_id: usuarioAuth.id, dados: seeded, atualizado_em: agora });
   if (erroInsert) throw erroInsert;
-  return seeded;
+  return { dados: seeded, atualizadoEm: agora };
 }
 
-async function salvarDadosNuvem(userId, dados) {
-  const { error } = await supabase.from(TABELA_DADOS).upsert({ user_id: userId, dados, atualizado_em: nowISO() });
-  if (error) console.error("Falha ao sincronizar com a nuvem:", error);
+/* Salva no Supabase, mas só efetiva a gravação se ninguém mais tiver salvo depois da última vez que
+   ESTE navegador leu os dados (comparando com atualizadoEmEsperado). Isso é o que impede uma aba/aparelho
+   com dados desatualizados de apagar silenciosamente o que foi feito em outro lugar nesse meio-tempo.
+   Retorna { ok, conflito, atualizadoEm } — "conflito" significa que outra sessão salvou primeiro e nada
+   foi sobrescrito aqui; quem chamou deve avisar a pessoa e recarregar os dados antes de tentar de novo. */
+async function salvarDadosNuvem(userId, dados, atualizadoEmEsperado) {
+  const agora = nowISO();
+  let query = supabase.from(TABELA_DADOS).update({ dados, atualizado_em: agora }).eq("user_id", userId);
+  if (atualizadoEmEsperado) query = query.eq("atualizado_em", atualizadoEmEsperado);
+  const { data, error } = await query.select("atualizado_em");
+  if (error) {
+    console.error("Falha ao sincronizar com a nuvem:", error);
+    return { ok: false, conflito: false, atualizadoEm: atualizadoEmEsperado };
+  }
+  if (atualizadoEmEsperado && (!data || data.length === 0)) {
+    return { ok: false, conflito: true, atualizadoEm: atualizadoEmEsperado };
+  }
+  return { ok: true, conflito: false, atualizadoEm: agora };
 }
 
 /* ============================================================
@@ -357,8 +373,8 @@ const ROUTE_TITLES = {
    LOGIN
    ============================================================ */
 function LoginScreen({ t, theme, toggleTheme, db, onLogin, onCriarConta, onRecuperarSenha }) {
-  const [email, setEmail] = useState("juniordefelicibus@gmail.com");
-  const [senha, setSenha] = useState("civil4000601");
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [manter, setManter] = useState(true);
   const [erro, setErro] = useState("");
@@ -2096,7 +2112,12 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
 
   const totalContasCartoes = db.contas.filter((c) => c.status === "ativo").length + (db.cartoes || []).filter((c) => c.status === "ativo").length;
 
-  const somaOnde = (tipo, statusFn) => noPeriodo.filter((tx) => tx.tipo === tipo && statusFn(tx.status)).reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  // Exclui o débito "PAGAMENTO DE FATURA DE CARTÃO" da soma: ele é só o registro interno de que o dinheiro saiu
+  // da conta, mas o valor gasto já está contado nas despesas de cartão individuais que ele quitou — somar os
+  // dois dobraria o valor. (Mesma regra já usada no Dashboard e no cálculo de "realizado" por categoria.)
+  const somaOnde = (tipo, statusFn) => noPeriodo
+    .filter((tx) => tx.tipo === tipo && statusFn(tx.status) && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura))
+    .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
   const resumo = [
     { label: "Despesa Pendente", valor: somaOnde("Despesa", (s) => s === "pendente"), icon: ArrowDownCircle, tone: t.accent },
     { label: "Despesa Total", valor: somaOnde("Despesa", (s) => s !== "cancelado"), icon: ArrowDownCircle, tone: t.danger },
@@ -3277,6 +3298,9 @@ const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
 
   const base = (db.transacoes || [])
     .filter((tx) => tx.status !== "cancelado")
+    // Exclui o débito "PAGAMENTO DE FATURA DE CARTÃO": ele já representa, num único lançamento, o total das
+    // despesas de cartão quitadas — contá-lo junto com essas despesas dobraria o valor no relatório.
+    .filter((tx) => !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura))
     .filter((tx) => !dataIni || (tx.data && tx.data >= dataIni))
     .filter((tx) => !dataFim || (tx.data && tx.data <= dataFim));
 
@@ -5213,6 +5237,9 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [erroConfig, setErroConfig] = useState("");
+  const [syncStatus, setSyncStatus] = useState("ok"); // 'ok' | 'salvando' | 'erro' | 'conflito'
+  const atualizadoEmRef = useRef(null); // último atualizado_em conhecido, usado para detectar sobrescrita por outra aba/aparelho
+  const ultimoDbRef = useRef(null); // guarda o último "next" para permitir "tentar novamente" após erro de rede
 
   const montarSessao = (usuarioAuth, dados) => {
     const perfil = (dados.usuarios || []).find((u) => u.id === usuarioAuth.id) || (dados.usuarios || [])[0];
@@ -5232,7 +5259,8 @@ export default function App() {
       const { data: { session: sessaoAuth } } = await supabase.auth.getSession();
       if (sessaoAuth?.user) {
         try {
-          const dados = await carregarDadosNuvem(sessaoAuth.user);
+          const { dados, atualizadoEm } = await carregarDadosNuvem(sessaoAuth.user);
+          atualizadoEmRef.current = atualizadoEm;
           setAuthUser(sessaoAuth.user);
           setDb(dados);
           setTheme(dados.tema || "light");
@@ -5247,8 +5275,25 @@ export default function App() {
 
   const persist = useCallback(async (next) => {
     setDb(next);
-    if (authUser) await salvarDadosNuvem(authUser.id, next);
+    ultimoDbRef.current = next;
+    if (!authUser) return;
+    setSyncStatus("salvando");
+    const resultado = await salvarDadosNuvem(authUser.id, next, atualizadoEmRef.current);
+    if (resultado.ok) {
+      atualizadoEmRef.current = resultado.atualizadoEm;
+      setSyncStatus("ok");
+    } else if (resultado.conflito) {
+      // Outra aba/aparelho salvou depois que carregamos os dados aqui: NÃO sobrescrevemos por cima.
+      // A mudança local fica só na tela até a pessoa recarregar e decidir o que fazer — evita apagar dados de outro lugar.
+      setSyncStatus("conflito");
+    } else {
+      setSyncStatus("erro");
+    }
   }, [authUser]);
+
+  const tentarSalvarNovamente = useCallback(async () => {
+    if (ultimoDbRef.current) await persist(ultimoDbRef.current);
+  }, [persist]);
 
   const t = THEME[theme];
 
@@ -5283,6 +5328,9 @@ export default function App() {
     setAuthUser(null);
     setSession(null);
     setDb(null);
+    atualizadoEmRef.current = null;
+    ultimoDbRef.current = null;
+    setSyncStatus("ok");
   };
 
   if (!SUPABASE_CONFIGURADO) {
@@ -5315,7 +5363,8 @@ export default function App() {
         onLogin={async (email, senha) => {
           const { data, error } = await supabase.auth.signInWithPassword({ email, password: senha });
           if (error) return "E-mail ou senha inválidos.";
-          const dados = await carregarDadosNuvem(data.user);
+          const { dados, atualizadoEm } = await carregarDadosNuvem(data.user);
+          atualizadoEmRef.current = atualizadoEm;
           setAuthUser(data.user);
           setDb(dados);
           setTheme(dados.tema || "light");
@@ -5327,7 +5376,8 @@ export default function App() {
           const { data, error } = await supabase.auth.signUp({ email, password: senha });
           if (error) return error.message.includes("already registered") ? "Esse e-mail já tem uma conta — faça login." : "Não foi possível criar a conta agora.";
           if (!data.session) return "Conta criada! Verifique seu e-mail para confirmar o acesso antes de entrar.";
-          const dados = await carregarDadosNuvem(data.user);
+          const { dados, atualizadoEm } = await carregarDadosNuvem(data.user);
+          atualizadoEmRef.current = atualizadoEm;
           setAuthUser(data.user);
           setDb(dados);
           setTheme(dados.tema || "light");
@@ -5380,6 +5430,41 @@ export default function App() {
         }
       `}</style>
 
+      {(syncStatus === "erro" || syncStatus === "conflito") && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
+            background: t.danger, color: "#fff", fontSize: 13, fontWeight: 600,
+            padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "center",
+            gap: 12, flexWrap: "wrap", textAlign: "center"
+          }}
+        >
+          <AlertTriangle size={16} style={{ flexShrink: 0 }} />
+          {syncStatus === "conflito" ? (
+            <>
+              <span>Esta tela ficou desatualizada — os dados foram alterados em outro aparelho ou outra aba. A última mudança feita aqui NÃO foi salva, para não apagar o que está na nuvem.</span>
+              <button
+                onClick={() => window.location.reload()}
+                style={{ background: "#fff", color: t.danger, border: "none", borderRadius: 6, padding: "5px 12px", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}
+              >
+                Recarregar agora
+              </button>
+            </>
+          ) : (
+            <>
+              <span>Não foi possível salvar a última alteração na nuvem (falha de conexão). O que você vê na tela ainda não está salvo.</span>
+              <button
+                onClick={tentarSalvarNovamente}
+                style={{ background: "#fff", color: t.danger, border: "none", borderRadius: 6, padding: "5px 12px", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}
+              >
+                Tentar salvar de novo
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <Sidebar
         t={t} route={route} setRoute={setRoute}
         sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
@@ -5387,7 +5472,7 @@ export default function App() {
         session={session}
       />
 
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", paddingTop: (syncStatus === "erro" || syncStatus === "conflito") ? 40 : 0, transition: "padding-top .15s" }}>
         <Header
           t={t} theme={theme} toggleTheme={toggleTheme} session={session}
           onLogout={logout}
