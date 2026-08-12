@@ -5240,6 +5240,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("ok"); // 'ok' | 'salvando' | 'erro' | 'conflito'
   const atualizadoEmRef = useRef(null); // último atualizado_em conhecido, usado para detectar sobrescrita por outra aba/aparelho
   const ultimoDbRef = useRef(null); // guarda o último "next" para permitir "tentar novamente" após erro de rede
+  const filaSalvamentoRef = useRef(Promise.resolve()); // serializa os salvamentos desta aba (ver persist abaixo)
 
   const montarSessao = (usuarioAuth, dados) => {
     const perfil = (dados.usuarios || []).find((u) => u.id === usuarioAuth.id) || (dados.usuarios || [])[0];
@@ -5273,26 +5274,35 @@ export default function App() {
     })();
   }, []);
 
-  const persist = useCallback(async (next) => {
+  const persist = useCallback((next) => {
     setDb(next);
     ultimoDbRef.current = next;
-    if (!authUser) return;
+    if (!authUser) return Promise.resolve();
     setSyncStatus("salvando");
-    const resultado = await salvarDadosNuvem(authUser.id, next, atualizadoEmRef.current);
-    if (resultado.ok) {
-      atualizadoEmRef.current = resultado.atualizadoEm;
-      setSyncStatus("ok");
-    } else if (resultado.conflito) {
-      // Outra aba/aparelho salvou depois que carregamos os dados aqui: NÃO sobrescrevemos por cima.
-      // A mudança local fica só na tela até a pessoa recarregar e decidir o que fazer — evita apagar dados de outro lugar.
-      setSyncStatus("conflito");
-    } else {
-      setSyncStatus("erro");
-    }
+    // Encadeia este salvamento depois do anterior (desta mesma aba). Sem isso, duas mudanças em sequência
+    // rápida (ex: dois campos editados um logo depois do outro) disparavam dois salvamentos em paralelo,
+    // e o segundo lia o atualizado_em antigo antes do primeiro terminar — parecendo um conflito com "outro
+    // aparelho" mesmo sendo a mesma aba. Encadeando, cada salvamento só começa depois do anterior confirmar,
+    // sempre com o atualizado_em mais recente.
+    const vez = filaSalvamentoRef.current.then(async () => {
+      const resultado = await salvarDadosNuvem(authUser.id, next, atualizadoEmRef.current);
+      if (resultado.ok) {
+        atualizadoEmRef.current = resultado.atualizadoEm;
+        setSyncStatus("ok");
+      } else if (resultado.conflito) {
+        // Outra aba/aparelho salvou depois que carregamos os dados aqui: NÃO sobrescrevemos por cima.
+        // A mudança local fica só na tela até a pessoa recarregar e decidir o que fazer — evita apagar dados de outro lugar.
+        setSyncStatus("conflito");
+      } else {
+        setSyncStatus("erro");
+      }
+    });
+    filaSalvamentoRef.current = vez;
+    return vez;
   }, [authUser]);
 
-  const tentarSalvarNovamente = useCallback(async () => {
-    if (ultimoDbRef.current) await persist(ultimoDbRef.current);
+  const tentarSalvarNovamente = useCallback(() => {
+    if (ultimoDbRef.current) return persist(ultimoDbRef.current);
   }, [persist]);
 
   const t = THEME[theme];
