@@ -16,25 +16,26 @@ import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
 
 /* ============================================================
-   TOKENS — identidade visual "Livro-razão digital"
-   Paleta: tinta profunda + verde-cofre + ouro-antigo
-   Tipografia: Nunito (display + corpo, fonte arredondada) + JetBrains Mono (números)
+   TOKENS — identidade visual "Painel de Análise"
+   Paleta: superfícies neutras + azul (receita/primário) + laranja (despesa)
+   — mesma paleta validada (contraste + daltonismo) do módulo Analista Financeiro.
+   Tipografia: fonte do sistema (system-ui) — sem fontes externas, mais rápida e moderna.
    ============================================================ */
-const FONTS_HREF =
-  "https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap";
+const FONT_STACK = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+const FONT_MONO = "ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace";
 
 const THEME = {
   light: {
-    bg: "#F2F4F3", surface: "#FFFFFF", surfaceAlt: "#EEF2F0", border: "#E2E7E4",
-    text: "#1B2420", textMuted: "#6B7268", primary: "#12A98F", primaryText: "#FFFFFF",
-    accent: "#B8862E", danger: "#E36A2E", sidebarBg: "#122019", sidebarText: "#D9E3DC",
-    sidebarMuted: "#8FA398", shadow: "0 1px 2px rgba(20,24,20,0.06), 0 8px 24px rgba(20,24,20,0.05)"
+    bg: "#F4F4F2", surface: "#FCFCFB", surfaceAlt: "#EEF0ED", border: "#E1E0D9",
+    text: "#0B0B0B", textMuted: "#5C5B56", primary: "#2A78D6", primaryText: "#FFFFFF",
+    accent: "#B8862E", danger: "#EB6834", sidebarBg: "#14161A", sidebarText: "#E4E4E1",
+    sidebarMuted: "#93938D", shadow: "0 1px 2px rgba(11,11,11,0.06), 0 8px 24px rgba(11,11,11,0.05)"
   },
   dark: {
-    bg: "#121212", surface: "#1A1A1C", surfaceAlt: "#222225", border: "#2E2E32",
-    text: "#EDEDED", textMuted: "#9A9A9E", primary: "#3FC79A", primaryText: "#121212",
-    accent: "#D9A94B", danger: "#E88052", sidebarBg: "#0C0C0E", sidebarText: "#E4E4E7",
-    sidebarMuted: "#8A8A8F", shadow: "0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35)"
+    bg: "#0D0D0D", surface: "#1A1A19", surfaceAlt: "#222220", border: "#2C2C2A",
+    text: "#FFFFFF", textMuted: "#C3C2B7", primary: "#3987E5", primaryText: "#FFFFFF",
+    accent: "#D9A94B", danger: "#D95926", sidebarBg: "#0E0E10", sidebarText: "#E4E4E1",
+    sidebarMuted: "#8A8A85", shadow: "0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35)"
   }
 };
 
@@ -233,10 +234,10 @@ function seedDB() {
     cartoes: [],
     transacoes: [],
     categorias: [
-      { id: uid(), nome: "Salário", tipo: "Receita", cor: "#0F6E5C", icone: "Wallet", status: "ativo" },
-      { id: uid(), nome: "Moradia", tipo: "Despesa", cor: "#B4432F", icone: "Home", status: "ativo" },
+      { id: uid(), nome: "Salário", tipo: "Receita", cor: "#2A78D6", icone: "Wallet", status: "ativo" },
+      { id: uid(), nome: "Moradia", tipo: "Despesa", cor: "#EB6834", icone: "Home", status: "ativo" },
       { id: uid(), nome: "Alimentação", tipo: "Despesa", cor: "#B8862E", icone: "Utensils", status: "ativo" },
-      { id: uid(), nome: "Transporte", tipo: "Despesa", cor: "#3F6FC7", icone: "Car", status: "ativo" }
+      { id: uid(), nome: "Transporte", tipo: "Despesa", cor: "#4A3AA7", icone: "Car", status: "ativo" }
     ].map((c) => ({ ...c, subcategoriasSeed: [] })),
     subcategorias: [],
     orcamentos: [],
@@ -368,6 +369,7 @@ const ROUTE_TITLES = {
   metas: "Metas",
   investimentos: "Investimentos",
   relatorios: "Relatórios",
+  analista: "Analista Financeiro",
   categorias: "Categorias & Subcategorias",
   auditoria: "Auditoria",
   config: "Configurações"
@@ -420,9 +422,8 @@ function LoginScreen({ t, theme, toggleTheme, db, onLogin, onCriarConta, onRecup
   };
 
   return (
-    <div style={{ minHeight: 620, display: "flex", background: t.bg, fontFamily: "Nunito, sans-serif", color: t.text }}>
-      <link rel="stylesheet" href={FONTS_HREF} />
-      <style>{`.display{font-family:'Nunito',sans-serif;font-weight:800;} .mono{font-family:'JetBrains Mono',monospace;}`}</style>
+    <div style={{ minHeight: 620, display: "flex", background: t.bg, fontFamily: FONT_STACK, color: t.text }}>
+      <style>{`.display{font-weight:700;} .mono{font-family:ui-monospace,'SF Mono','Cascadia Code',Consolas,monospace;}`}</style>
 
       {/* Coluna de marca */}
       <div style={{ width: 220, flexShrink: 0, background: t.sidebarBg, color: t.sidebarText, padding: "28px 20px" }} className="sidebar-desktop">
@@ -592,6 +593,7 @@ const NAV = [
   { id: "metas", label: "Metas", icon: Target, disabled: false },
   { id: "investimentos", label: "Investimentos", icon: TrendingUp, disabled: false },
   { id: "relatorios", label: "Relatórios", icon: BarChart3, disabled: false },
+  { id: "analista", label: "Analista Financeiro", icon: LineChartIcon, disabled: false },
   { divider: true },
   { id: "config", label: "Configurações", icon: Settings, disabled: false }
 ];
@@ -808,7 +810,7 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     .map((c) => ({ name: c.nome, value: realizadoCategoriaMes(c.id), color: c.cor }))
     .filter((d) => d.value > 0);
 
-  const PALETA_DONUT = [t.primary, t.danger, t.accent, "#7B4FB0", "#2E9BB8", "#3F6FC7"];
+  const PALETA_DONUT = [t.primary, t.danger, t.accent, "#E87BA4", "#1BAF7A", "#4A3AA7"];
   const subcategoriasDoFiltro = filtroDonut ? ordenarPorNome(db.subcategorias.filter((s) => s.categoriaId === filtroDonut && s.status === "ativo")) : [];
   const donutData = !filtroDonut
     ? pieData
@@ -1500,7 +1502,7 @@ function ModalShell({ t, title, onClose, children }) {
   );
 }
 
-const CORES = ["#0F6E5C", "#B4432F", "#B8862E", "#3F6FC7", "#7B4FB0", "#2E9BB8"];
+const CORES = ["#2A78D6", "#EB6834", "#1BAF7A", "#B8862E", "#E87BA4", "#008300", "#4A3AA7", "#E34948"];
 
 function ModalCategoria({ t, dado, onClose, onSave }) {
   const [nome, setNome] = useState(dado?.nome || "");
@@ -3449,11 +3451,11 @@ const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
     }
 
     const totaisHtml = tipoRelatorio === "aportes" ? `
-      <div><span style="color:#666;font-size:11px">Total Aportado</span><div style="font-size:16px;font-weight:700;color:#0F6E5C">${esc(fmtBRL(totalAportes))}</div></div>
-      <div><span style="color:#666;font-size:11px">Total Resgatado</span><div style="font-size:16px;font-weight:700;color:#B4432F">${esc(fmtBRL(totalResgates))}</div></div>
+      <div><span style="color:#666;font-size:11px">Total Aportado</span><div style="font-size:16px;font-weight:700;color:#2A78D6">${esc(fmtBRL(totalAportes))}</div></div>
+      <div><span style="color:#666;font-size:11px">Total Resgatado</span><div style="font-size:16px;font-weight:700;color:#EB6834">${esc(fmtBRL(totalResgates))}</div></div>
     ` : `
-      ${tipoRelatorio !== "despesas" && tipoRelatorio !== "fatura" ? `<div><span style="color:#666;font-size:11px">Total Receitas</span><div style="font-size:16px;font-weight:700;color:#0F6E5C">${esc(fmtBRL(totalReceitas))}</div></div>` : ""}
-      ${tipoRelatorio !== "receitas" ? `<div><span style="color:#666;font-size:11px">Total Despesas</span><div style="font-size:16px;font-weight:700;color:#B4432F">${esc(fmtBRL(totalDespesas))}</div></div>` : ""}
+      ${tipoRelatorio !== "despesas" && tipoRelatorio !== "fatura" ? `<div><span style="color:#666;font-size:11px">Total Receitas</span><div style="font-size:16px;font-weight:700;color:#2A78D6">${esc(fmtBRL(totalReceitas))}</div></div>` : ""}
+      ${tipoRelatorio !== "receitas" ? `<div><span style="color:#666;font-size:11px">Total Despesas</span><div style="font-size:16px;font-weight:700;color:#EB6834">${esc(fmtBRL(totalDespesas))}</div></div>` : ""}
     `;
 
     const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8" />
@@ -3703,6 +3705,363 @@ function CardIndice({ t, icon: Icon, titulo, valor, sufixo, dataRef, onEditar })
   );
 }
 
+/* ============================================================
+   ANALISTA FINANCEIRO — módulo de análise avançada
+   Lê os mesmos dados de "Transações" (db.transacoes/contas/cartões/categorias):
+   os filtros abaixo só recortam o que aparece NESTA tela — nada aqui altera o
+   restante do sistema, e qualquer lançamento novo em Transações já entra na
+   próxima renderização deste painel automaticamente.
+   ============================================================ */
+function origemChave(tx) {
+  return `${tx.origemTipo}:${tx.origemId}`;
+}
+
+const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, db, onVerTransacoes, onVerRelatorios }) {
+  const [dataIni, setDataIni] = useState(primeiroDiaMesAtualISO());
+  const [dataFim, setDataFim] = useState(ultimoDiaMesAtualISO());
+  const [filtroTipo, setFiltroTipo] = useState(""); // "" | Receita | Despesa
+  const [filtroOrigem, setFiltroOrigem] = useState(""); // "" | "conta:id" | "cartao:id"
+  const [filtroCategoria, setFiltroCategoria] = useState("");
+  const [filtroStatus, setFiltroStatus] = useState(""); // "" | pendente | concluido
+  const [busca, setBusca] = useState("");
+
+  const contasAtivas = ordenarPorNome((db.contas || []).filter((c) => c.status === "ativo"), "nomeConta");
+  const cartoesAtivos = ordenarPorNome((db.cartoes || []).filter((c) => c.status === "ativo"));
+  const categoriasOrdenadas = ordenarPorNome(db.categorias || []);
+
+  // Mesma base do módulo Relatórios: ignora canceladas e o débito interno de pagamento de fatura
+  // (que já representa, num único lançamento, o total das despesas do cartão quitadas).
+  const base = (db.transacoes || [])
+    .filter((tx) => tx.status !== "cancelado")
+    .filter((tx) => !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura))
+    .filter((tx) => !dataIni || (tx.data && tx.data >= dataIni))
+    .filter((tx) => !dataFim || (tx.data && tx.data <= dataFim));
+
+  const filtradas = base
+    .filter((tx) => !filtroTipo || tx.tipo === filtroTipo)
+    .filter((tx) => !filtroOrigem || origemChave(tx) === filtroOrigem)
+    .filter((tx) => !filtroCategoria || tx.categoriaId === filtroCategoria)
+    .filter((tx) => !filtroStatus || tx.status === filtroStatus)
+    .filter((tx) => !busca.trim() || (tx.descricao || "").toLowerCase().includes(busca.trim().toLowerCase()));
+
+  const totalReceitas = filtradas.filter((tx) => tx.tipo === "Receita").reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  const totalDespesas = filtradas.filter((tx) => tx.tipo === "Despesa").reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  const saldoPeriodo = totalReceitas - totalDespesas;
+  const totalPendente = filtradas.filter((tx) => tx.status === "pendente").reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+
+  const resumo = [
+    { label: "Receitas no período", valor: totalReceitas, icon: TrendingUp, tone: t.primary },
+    { label: "Despesas no período", valor: totalDespesas, icon: TrendingDown, tone: t.danger },
+    { label: "Saldo do período", valor: saldoPeriodo, icon: Wallet, tone: saldoPeriodo >= 0 ? t.primary : t.danger },
+    { label: "Pendente (a pagar/receber)", valor: totalPendente, icon: CalendarClock, tone: t.accent }
+  ];
+
+  const saldoAcumuladoDia = (() => {
+    const porDia = new Map();
+    filtradas.forEach((tx) => {
+      if (!tx.data) return;
+      const delta = tx.tipo === "Receita" ? (Number(tx.valor) || 0) : -(Number(tx.valor) || 0);
+      porDia.set(tx.data, (porDia.get(tx.data) || 0) + delta);
+    });
+    const dias = Array.from(porDia.keys()).sort();
+    let acumulado = 0;
+    return dias.map((d) => { acumulado += porDia.get(d); return { data: dataBR(d), saldo: acumulado }; });
+  })();
+
+  const fluxoPorDia = (() => {
+    const mapa = new Map();
+    filtradas.forEach((tx) => {
+      if (!tx.data) return;
+      if (!mapa.has(tx.data)) mapa.set(tx.data, { data: tx.data, Receita: 0, Despesa: 0 });
+      mapa.get(tx.data)[tx.tipo] += Number(tx.valor) || 0;
+    });
+    return Array.from(mapa.values()).sort((a, b) => a.data.localeCompare(b.data)).map((d) => ({ ...d, data: dataBR(d.data) }));
+  })();
+
+  // Cada categoria já tem sua própria cor cadastrada (usada em todo o app) — reaproveitada aqui.
+  const despesasPorCategoria = (() => {
+    const mapa = new Map();
+    filtradas.filter((tx) => tx.tipo === "Despesa").forEach((tx) => {
+      const cat = tx.categoriaId ? db.categorias.find((c) => c.id === tx.categoriaId) : null;
+      const chave = cat ? cat.id : "sem-categoria";
+      if (!mapa.has(chave)) mapa.set(chave, { categoria: cat ? cat.nome : "Sem categoria", cor: cat ? cat.cor : t.textMuted, total: 0 });
+      mapa.get(chave).total += Number(tx.valor) || 0;
+    });
+    return Array.from(mapa.values()).sort((a, b) => b.total - a.total);
+  })();
+
+  const despesasPorSubcategoria = (() => {
+    const mapa = new Map();
+    filtradas.filter((tx) => tx.tipo === "Despesa").forEach((tx) => {
+      const nome = subcategoriaNome(db, tx) || "Sem subcategoria";
+      mapa.set(nome, (mapa.get(nome) || 0) + (Number(tx.valor) || 0));
+    });
+    return Array.from(mapa.entries()).map(([subcategoria, total]) => ({ subcategoria, total })).sort((a, b) => b.total - a.total).slice(0, 10);
+  })();
+
+  const porOrigem = (() => {
+    const mapa = new Map();
+    filtradas.forEach((tx) => {
+      const chave = origemChave(tx);
+      if (!mapa.has(chave)) mapa.set(chave, { origem: origemNome(db, tx), Receita: 0, Despesa: 0 });
+      mapa.get(chave)[tx.tipo] += Number(tx.valor) || 0;
+    });
+    return Array.from(mapa.values()).sort((a, b) => (b.Receita + b.Despesa) - (a.Receita + a.Despesa));
+  })();
+
+  const statusDespesas = { concluido: 0, pendente: 0 };
+  const statusReceitas = { concluido: 0, pendente: 0 };
+  filtradas.forEach((tx) => {
+    const alvo = tx.tipo === "Despesa" ? statusDespesas : statusReceitas;
+    if (tx.status === "concluido") alvo.concluido += Number(tx.valor) || 0;
+    else if (tx.status === "pendente") alvo.pendente += Number(tx.valor) || 0;
+  });
+
+  const top10Despesas = filtradas.filter((tx) => tx.tipo === "Despesa").slice().sort((a, b) => (Number(b.valor) || 0) - (Number(a.valor) || 0)).slice(0, 10);
+
+  const limparFiltros = () => {
+    setDataIni(primeiroDiaMesAtualISO()); setDataFim(ultimoDiaMesAtualISO());
+    setFiltroTipo(""); setFiltroOrigem(""); setFiltroCategoria(""); setFiltroStatus(""); setBusca("");
+  };
+  const filtrosAtivos = filtroTipo || filtroOrigem || filtroCategoria || filtroStatus || busca.trim();
+  const selectFiltro = { ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+        <div>
+          <SectionTitle t={t} title="Análise Avançada" icon={LineChartIcon} />
+          <p style={{ fontSize: 12, color: t.textMuted, margin: "-8px 0 0", maxWidth: 560 }}>
+            Mesmos lançamentos de "Transações", sob outra lente: tendências, categorias e contas/cartões lado a lado. Os filtros abaixo só recortam esta tela.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onVerTransacoes} style={btnGhost(t)}><Receipt size={14} /> Ver transações</button>
+          <button onClick={onVerRelatorios} style={btnGhost(t)}><FileText size={14} /> Exportar relatório</button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: "8px 12px" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: t.textMuted, fontWeight: 600 }}><Calendar size={13} /> Período:</span>
+        <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...selectFiltro, minWidth: 130, flexShrink: 0 }} />
+        <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
+        <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...selectFiltro, minWidth: 130, flexShrink: 0 }} />
+
+        <span style={{ width: 1, alignSelf: "stretch", background: t.border, margin: "0 2px" }} />
+
+        <select value={filtroTipo} onChange={(e) => setFiltroTipo(e.target.value)} style={selectFiltro}>
+          <option value="">Receitas e Despesas</option>
+          <option value="Receita">Só Receitas</option>
+          <option value="Despesa">Só Despesas</option>
+        </select>
+
+        <select value={filtroOrigem} onChange={(e) => setFiltroOrigem(e.target.value)} style={selectFiltro}>
+          <option value="">Todas as contas/cartões</option>
+          {contasAtivas.length > 0 && (
+            <optgroup label="Contas">
+              {contasAtivas.map((c) => <option key={c.id} value={`conta:${c.id}`}>{c.nomeConta}</option>)}
+            </optgroup>
+          )}
+          {cartoesAtivos.length > 0 && (
+            <optgroup label="Cartões">
+              {cartoesAtivos.map((c) => <option key={c.id} value={`cartao:${c.id}`}>{c.nome}</option>)}
+            </optgroup>
+          )}
+        </select>
+
+        <select value={filtroCategoria} onChange={(e) => setFiltroCategoria(e.target.value)} style={selectFiltro}>
+          <option value="">Todas as categorias</option>
+          {categoriasOrdenadas.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+        </select>
+
+        <select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)} style={selectFiltro}>
+          <option value="">Todos os status</option>
+          <option value="concluido">Pago/Recebido</option>
+          <option value="pendente">Pendente</option>
+        </select>
+
+        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar descrição…" style={{ ...selectFiltro, width: 170 }} />
+
+        {filtrosAtivos && (
+          <button onClick={limparFiltros} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600 }}>
+            <X size={12} /> limpar filtros
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 }}>
+        {resumo.map((r) => (
+          <div key={r.label} style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "14px 16px", boxShadow: t.shadow }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <span style={{ fontSize: 12, color: t.textMuted, fontWeight: 600 }}>{r.label}</span>
+              <div style={{ width: 26, height: 26, borderRadius: 7, background: `${r.tone}18`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <r.icon size={13} color={r.tone} />
+              </div>
+            </div>
+            <div className="mono" style={{ fontSize: 18, fontWeight: 600 }}>{fmtBRL(r.valor)}</div>
+          </div>
+        ))}
+      </div>
+
+      {filtradas.length === 0 ? (
+        <EmptyState t={t} text="Nenhum lançamento encontrado para esse período/filtros. Ajuste os filtros acima ou cadastre transações em “Transações”." />
+      ) : (
+        <>
+          <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+            <ChartCard t={t} title="Saldo acumulado no período" subtitle="Receitas − despesas, dia a dia">
+              {saldoAcumuladoDia.length === 0 ? <EmptyChart t={t} /> : (
+                <ResponsiveContainer width="100%" height={230}>
+                  <AreaChart data={saldoAcumuladoDia}>
+                    <defs>
+                      <linearGradient id="gradSaldoAnalista" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor={t.primary} stopOpacity={0.35} />
+                        <stop offset="95%" stopColor={t.primary} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke={t.border} vertical={false} />
+                    <XAxis dataKey="data" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
+                    <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Area type="monotone" dataKey="saldo" name="Saldo acumulado" stroke={t.primary} fill="url(#gradSaldoAnalista)" strokeWidth={2} isAnimationActive={false} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </ChartCard>
+
+            <ChartCard t={t} title="Receitas vs. Despesas por dia" subtitle="Soma dos lançamentos em cada data">
+              {fluxoPorDia.length === 0 ? <EmptyChart t={t} /> : (
+                <ResponsiveContainer width="100%" height={230}>
+                  <BarChart data={fluxoPorDia}>
+                    <CartesianGrid stroke={t.border} vertical={false} />
+                    <XAxis dataKey="data" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
+                    <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
+                    <Bar dataKey="Receita" fill={t.primary} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                    <Bar dataKey="Despesa" fill={t.danger} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ChartCard>
+          </div>
+
+          <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+            <ChartCard t={t} title="Despesas por categoria" subtitle="Total gasto em cada categoria no período filtrado">
+              {despesasPorCategoria.length === 0 ? <EmptyChart t={t} /> : (
+                <ResponsiveContainer width="100%" height={Math.max(220, despesasPorCategoria.length * 32 + 40)}>
+                  <BarChart data={despesasPorCategoria} layout="vertical" margin={{ left: 8 }}>
+                    <CartesianGrid stroke={t.border} horizontal={false} />
+                    <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
+                    <YAxis type="category" dataKey="categoria" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Bar dataKey="total" name="Despesas" radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                      {despesasPorCategoria.map((d, i) => <Cell key={i} fill={d.cor} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ChartCard>
+
+            <ChartCard t={t} title="Despesas por subcategoria" subtitle="Top 10 subcategorias com maior gasto">
+              {despesasPorSubcategoria.length === 0 ? <EmptyChart t={t} /> : (
+                <ResponsiveContainer width="100%" height={Math.max(220, despesasPorSubcategoria.length * 32 + 40)}>
+                  <BarChart data={despesasPorSubcategoria} layout="vertical" margin={{ left: 8 }}>
+                    <CartesianGrid stroke={t.border} horizontal={false} />
+                    <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
+                    <YAxis type="category" dataKey="subcategoria" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Bar dataKey="total" name="Despesas" fill={t.danger} radius={[0, 4, 4, 0]} isAnimationActive={false} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ChartCard>
+          </div>
+
+          <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14, marginBottom: 14 }}>
+            <ChartCard t={t} title="Receitas x Despesas por conta/cartão" subtitle="Movimentação total em cada origem financeira">
+              {porOrigem.length === 0 ? <EmptyChart t={t} /> : (
+                <ResponsiveContainer width="100%" height={Math.max(220, porOrigem.length * 40 + 50)}>
+                  <BarChart data={porOrigem} layout="vertical" margin={{ left: 8 }}>
+                    <CartesianGrid stroke={t.border} horizontal={false} />
+                    <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
+                    <YAxis type="category" dataKey="origem" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={120} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
+                    <Bar dataKey="Receita" fill={t.primary} radius={[0, 4, 4, 0]} isAnimationActive={false} />
+                    <Bar dataKey="Despesa" fill={t.danger} radius={[0, 4, 4, 0]} isAnimationActive={false} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ChartCard>
+
+            <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
+              <SectionTitle t={t} title="Status dos lançamentos" icon={CheckCircle2} />
+              {[
+                { label: "Despesas", dados: statusDespesas },
+                { label: "Receitas", dados: statusReceitas }
+              ].map(({ label, dados }) => {
+                const total = dados.concluido + dados.pendente;
+                const pctConcluido = total > 0 ? (dados.concluido / total) * 100 : 0;
+                const pctPendente = total > 0 ? (dados.pendente / total) * 100 : 0;
+                return (
+                  <div key={label} style={{ marginBottom: 18 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 8 }}>
+                      <span style={{ fontWeight: 600 }}>{label}</span>
+                      <span className="mono" style={{ color: t.textMuted }}>{fmtBRL(total)}</span>
+                    </div>
+                    <div style={{ height: 10, borderRadius: 6, background: t.surfaceAlt, overflow: "hidden", display: "flex" }}>
+                      <div style={{ height: "100%", width: `${pctConcluido}%`, background: t.primary }} />
+                      <div style={{ height: "100%", width: `${pctPendente}%`, background: t.accent }} />
+                    </div>
+                    <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 11.5, flexWrap: "wrap" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 5, color: t.textMuted }}>
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.primary }} />
+                        {label === "Despesas" ? "Paga" : "Recebida"} <span className="mono" style={{ color: t.text, fontWeight: 600 }}>{fmtBRL(dados.concluido)}</span>
+                      </span>
+                      <span style={{ display: "flex", alignItems: "center", gap: 5, color: t.textMuted }}>
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.accent }} />
+                        Pendente <span className="mono" style={{ color: t.text, fontWeight: 600 }}>{fmtBRL(dados.pendente)}</span>
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 14 }}>
+            <SectionTitle t={t} title="Top 10 maiores despesas" icon={TrendingDown} />
+            {top10Despesas.length === 0 ? <EmptyState t={t} text="Nenhuma despesa no período filtrado." /> : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                  <thead>
+                    <tr>
+                      {["Data", "Descrição", "Categoria", "Origem", "Valor"].map((h, i) => (
+                        <th key={h} style={{ textAlign: i === 4 ? "right" : "left", padding: "8px 10px", fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.3, color: t.textMuted, borderBottom: `1px solid ${t.border}` }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {top10Despesas.map((tx) => (
+                      <tr key={tx.id}>
+                        <td style={tdStyle(t)}>{dataBR(tx.data)}</td>
+                        <td style={{ ...tdStyle(t), color: t.text, fontWeight: 500 }}>{tx.descricao}</td>
+                        <td style={tdStyle(t)}>{categoriaNome(db, tx) || "—"}</td>
+                        <td style={tdStyle(t)}>{origemNome(db, tx)}</td>
+                        <td className="mono" style={{ ...tdStyle(t), textAlign: "right", fontWeight: 600, color: t.text }}>{fmtBRL(tx.valor)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+});
+
 const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChange }) {
   const [modal, setModal] = useState(null); // {} novo | {dado} editar ativo
   const [ativoAbertoId, setAtivoAbertoId] = useState(null);
@@ -3845,7 +4204,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
   ];
 
   // Agrupamento por classe de ativo — usado na lista agrupada e no gráfico de pizza
-  const PALETA_CLASSES = [t.primary, t.accent, t.danger, "#3F6FC7", "#2E9BB8", "#7B4FB0", "#C77B3F"];
+  const PALETA_CLASSES = [t.primary, t.accent, t.danger, "#4A3AA7", "#1BAF7A", "#E87BA4", "#E34948"];
   const dadosPorClasse = TIPOS_ATIVO.map((classe, i) => {
     const doGrupo = ativosAtivos.filter((a) => a.tipo === classe);
     const valorTotal = doGrupo.reduce((s, a) => s + saldoAtivo(a), 0);
@@ -3893,7 +4252,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
     : construirBucketsMensais(12);
 
   // Pizza: "Tudo" mostra % por classe; filtrando uma classe, mostra % por ativo dentro dela
-  const PALETA_ATIVOS = [t.primary, t.accent, t.danger, "#3F6FC7", "#2E9BB8", "#7B4FB0", "#C77B3F", "#5B8C5A"];
+  const PALETA_ATIVOS = [t.primary, t.accent, t.danger, "#4A3AA7", "#1BAF7A", "#E87BA4", "#E34948", "#008300"];
   const dadosPizzaClasses = filtroClassePizza === ""
     ? dadosPorClasse.map((g) => ({ name: g.classe, value: g.valorTotal, color: g.cor }))
     : (() => {
@@ -3902,7 +4261,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
       })();
 
   // Por instituição financeira
-  const PALETA_INST = [t.danger, t.primary, "#3F6FC7", t.accent, "#2E9BB8", "#7B4FB0"];
+  const PALETA_INST = [t.danger, t.primary, "#4A3AA7", t.accent, "#1BAF7A", "#E87BA4"];
   const mapaInst = new Map();
   ativosAtivos.forEach((a) => {
     const nome = (a.instituicaoFinanceira || "Não informado").trim().toUpperCase() || "NÃO INFORMADO";
@@ -5349,8 +5708,7 @@ export default function App() {
 
   if (!SUPABASE_CONFIGURADO) {
     return (
-      <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: THEME.light.bg, fontFamily: "Nunito, sans-serif", padding: 24 }}>
-        <link rel="stylesheet" href={FONTS_HREF} />
+      <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: THEME.light.bg, fontFamily: FONT_STACK, padding: 24 }}>
         <div style={{ maxWidth: 420, textAlign: "center", color: THEME.light.text }}>
           <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 8 }}>Conecte o Supabase para continuar</div>
           <p style={{ fontSize: 13.5, color: THEME.light.textMuted, lineHeight: 1.6 }}>
@@ -5363,8 +5721,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: THEME.light.bg, fontFamily: "Nunito, sans-serif" }}>
-        <link rel="stylesheet" href={FONTS_HREF} />
+      <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: THEME.light.bg, fontFamily: FONT_STACK }}>
         <span style={{ color: THEME.light.textMuted }}>Carregando…</span>
       </div>
     );
@@ -5408,13 +5765,12 @@ export default function App() {
   }
 
   return (
-    <div style={{ fontFamily: "Nunito, sans-serif", background: t.bg, color: t.text, height: "100vh", display: "flex", position: "relative", transition: "background .2s,color .2s", overflow: "hidden" }}>
-      <link rel="stylesheet" href={FONTS_HREF} />
+    <div style={{ fontFamily: FONT_STACK, background: t.bg, color: t.text, height: "100vh", display: "flex", position: "relative", transition: "background .2s,color .2s", overflow: "hidden" }}>
       <style>{`
         * { box-sizing: border-box; }
         ::selection { background: ${t.primary}33; }
-        .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
-        .display { font-family: 'Nunito', sans-serif; font-weight: 800; }
+        .mono { font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace; font-variant-numeric: tabular-nums; }
+        .display { font-weight: 700; }
         button { font-family: inherit; cursor: pointer; }
         input { font-family: inherit; }
         .scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -5542,6 +5898,13 @@ export default function App() {
             />
           )}
           {route === "relatorios" && <RelatoriosView t={t} db={db} />}
+          {route === "analista" && (
+            <AnalistaFinanceiroView
+              t={t} db={db}
+              onVerTransacoes={() => setRoute("transacoes")}
+              onVerRelatorios={() => setRoute("relatorios")}
+            />
+          )}
           {route === "categorias" && (
             <CategoriasView
               t={t} db={db}
