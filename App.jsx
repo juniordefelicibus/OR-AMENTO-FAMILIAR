@@ -3824,7 +3824,7 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
     setFiltroTipo(""); setFiltroOrigem(""); setFiltroCategoria(""); setFiltroStatus(""); setBusca("");
   };
   const filtrosAtivos = filtroTipo || filtroOrigem || filtroCategoria || filtroStatus || busca.trim();
-  const selectFiltro = { ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" };
+  const selectFiltro = { ...selectStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" };
 
   return (
     <div>
