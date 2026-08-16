@@ -5,8 +5,8 @@ import {
   Eye, EyeOff, TrendingUp, TrendingDown, PiggyBank, Landmark, Target, Calendar,
   Wallet, Receipt, BarChart3, Lock, Mail, ArrowRight, X, Check, Menu, ShieldCheck,
   LineChart as LineChartIcon, CreditCard, Repeat, CheckCircle2, Ban, ArrowUpCircle,
-  ArrowDownCircle, CalendarClock, SlidersHorizontal, ArrowLeftRight, StickyNote, PartyPopper, AlertTriangle, ImagePlus,
-  FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins
+  ArrowDownCircle, CalendarClock, SlidersHorizontal, ArrowLeftRight, StickyNote, PartyPopper, AlertTriangle, ImagePlus, Bell,
+  FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -116,6 +116,14 @@ function despesasFaturaAtual(cartao, transacoes, refData) {
 function faturaAbertaCartao(cartao, transacoes, refData) {
   return despesasFaturaAtual(cartao, transacoes, refData).reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
 }
+/* Soma das parcelas pendentes já cadastradas que NÃO entram na fatura em aberto agora — datadas depois do
+   próximo fechamento, então só vão aparecer numa fatura futura. Mostrado à parte pra essas pendências não
+   parecerem "sumidas" quando o card só exibe o valor da fatura atual. */
+function totalParcelasFuturasCartao(cartao, transacoes, refData) {
+  const todasPendentes = despesasCartao(cartao, transacoes).filter((tx) => tx.status === "pendente");
+  const idsFaturaAtual = new Set(despesasFaturaAtual(cartao, transacoes, refData).map((tx) => tx.id));
+  return todasPendentes.filter((tx) => !idsFaturaAtual.has(tx.id)).reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+}
 /* Janela (início excl., fim incl.) da fatura que FECHA no mês/ano informados — usada pelo seletor de mês do Painel.
    Diferente de cicloFaturaAtual: aqui o mês/ano já dizem exatamente qual fatura mostrar, sem precisar simular "hoje". */
 function cicloFaturaMes(cartao, ano, mes) {
@@ -215,6 +223,70 @@ function ultimaAtualizacaoAtivo(ativo) {
   return datas.length ? datas[datas.length - 1] : null;
 }
 
+/* Classes de ativo com cotação automática disponível (via API pública) e onde ela vem de cada uma. */
+const CLASSES_COM_TICKER_BRAPI = ["Ações", "FIIs"]; // B3 — via brapi.dev
+const CLASSES_COM_ID_COINGECKO = ["Criptomoedas"]; // via CoinGecko
+
+/* Sugestão de aporte por CLASSE: compara o valor atual de cada classe com a meta de alocação (%) e distribui
+   o valor do aporte priorizando quem está mais "atrasado" — sem nunca sugerir mais do que o necessário pra
+   cada classe chegar exatamente ao ideal. Se o aporte for maior do que o necessário pra zerar todo o atraso,
+   o restante é distribuído seguindo a própria meta (todo mundo já balanceado, então segue proporção normal). */
+function sugerirAportePorClasse(gruposClasse, metasClasse, aporte, totalAtualCarteira) {
+  const totalFuturo = (Number(totalAtualCarteira) || 0) + aporte;
+  const comMeta = TIPOS_ATIVO
+    .map((classe) => ({ classe, valorAtual: gruposClasse.find((g) => g.classe === classe)?.valorTotal || 0, metaPct: Number(metasClasse?.[classe]) || 0 }))
+    .filter((g) => g.metaPct > 0);
+  if (comMeta.length === 0 || aporte <= 0) return [];
+
+  const diffs = comMeta.map((g) => ({ ...g, diff: Math.max(0, (g.metaPct / 100) * totalFuturo - g.valorAtual) }));
+  const somaDiffs = diffs.reduce((s, d) => s + d.diff, 0);
+
+  let resultado;
+  if (somaDiffs >= aporte) {
+    // Não dá pra rebalancear tudo com esse aporte: prioriza proporcionalmente quem está mais atrasado.
+    resultado = diffs.map((d) => ({ classe: d.classe, valorSugerido: somaDiffs > 0 ? (d.diff / somaDiffs) * aporte : 0 }));
+  } else {
+    // Dá pra zerar o atraso de todas as classes e ainda sobra: o resto segue a meta normalmente.
+    const sobra = aporte - somaDiffs;
+    const somaMetas = diffs.reduce((s, d) => s + d.metaPct, 0);
+    resultado = diffs.map((d) => ({ classe: d.classe, valorSugerido: d.diff + (somaMetas > 0 ? (d.metaPct / somaMetas) * sobra : 0) }));
+  }
+  return resultado
+    .filter((r) => r.valorSugerido > 0.01)
+    .map((r) => {
+      const g = comMeta.find((x) => x.classe === r.classe);
+      const pctAtual = totalAtualCarteira > 0 ? (g.valorAtual / totalAtualCarteira) * 100 : 0;
+      const pctFuturo = totalFuturo > 0 ? ((g.valorAtual + r.valorSugerido) / totalFuturo) * 100 : 0;
+      return { classe: r.classe, valorSugerido: r.valorSugerido, valorAtual: g.valorAtual, pctAtual, pctIdeal: g.metaPct, pctFuturo };
+    })
+    .sort((a, b) => b.valorSugerido - a.valorSugerido);
+}
+
+/* Dentro de uma classe, distribui o valor sugerido entre os ativos já cadastrados: equilibra priorizando quem
+   tem menos (meta igualitária dentro da classe) e dá uma leve preferência a quem caiu de preço hoje — "comprar
+   na baixa" — quando há cotação do dia disponível para o ativo. Nunca zera ninguém por causa da variação do dia,
+   é só um empurrão a mais em cima do balanceamento. */
+function sugerirAporteAtivosDaClasse(ativosDaClasse, valorSugeridoClasse) {
+  if (!ativosDaClasse.length || valorSugeridoClasse <= 0) return [];
+  const valores = ativosDaClasse.map((a) => ({ ativo: a, valorAtual: saldoAtivo(a) }));
+  const totalFuturoClasse = valores.reduce((s, v) => s + v.valorAtual, 0) + valorSugeridoClasse;
+  const metaIgualitaria = totalFuturoClasse / valores.length;
+  const diffs = valores.map((v) => ({ ...v, diff: Math.max(0, metaIgualitaria - v.valorAtual) }));
+  const somaDiffs = diffs.reduce((s, d) => s + d.diff, 0);
+
+  const pesos = diffs.map((d) => {
+    const variacao = typeof d.ativo.variacaoDiaPct === "number" ? d.ativo.variacaoDiaPct : 0;
+    const fatorTilt = Math.max(0.5, 1 - (variacao / 100) * 0.5); // caiu hoje → peso um pouco maior; subiu → um pouco menor
+    const base = somaDiffs > 0 ? d.diff / somaDiffs : 1 / diffs.length;
+    return { ativo: d.ativo, valorAtual: d.valorAtual, peso: base * fatorTilt };
+  });
+  const somaPesos = pesos.reduce((s, p) => s + p.peso, 0);
+  return pesos
+    .map((p) => ({ ativo: p.ativo, valorAtual: p.valorAtual, valorSugerido: somaPesos > 0 ? (p.peso / somaPesos) * valorSugeridoClasse : 0 }))
+    .filter((r) => r.valorSugerido > 0.01)
+    .sort((a, b) => b.valorSugerido - a.valorSugerido);
+}
+
 const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
 const MESES_LONGOS = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
@@ -266,7 +338,7 @@ const INDICES_PADRAO = {
   dolar: { valor: 5.11, dataRef: "2026-07-29" },
   bitcoin: { valor: 331413.24, dataRef: "2026-07-29" }
 };
-const DB_DEFAULTS = { usuarios: [], contas: [], cartoes: [], transacoes: [], categorias: [], subcategorias: [], metas: [], ativos: [], indices: INDICES_PADRAO, metaRendaMensal: 0, vencimentos: [], orcamentos: [], anotacoes: [], auditoria: [], tema: "light", permiteDeletarMovimentacoes: false };
+const DB_DEFAULTS = { usuarios: [], contas: [], cartoes: [], transacoes: [], categorias: [], subcategorias: [], metas: [], ativos: [], indices: INDICES_PADRAO, metaRendaMensal: 0, vencimentos: [], orcamentos: [], anotacoes: [], auditoria: [], tema: "light", permiteDeletarMovimentacoes: false, metasClasse: {}, brapiToken: "" };
 function withDefaults(db) {
   const merged = { ...DB_DEFAULTS, ...db };
   Object.keys(DB_DEFAULTS).forEach((k) => { if (merged[k] === undefined || merged[k] === null) merged[k] = DB_DEFAULTS[k]; });
@@ -844,6 +916,29 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     .filter((tx) => tx.tipo === abaPendencias && tx.status === "pendente")
     .sort((a, b) => (a.data || "").localeCompare(b.data || ""));
 
+  // Lembretes da Semana — sempre a semana corrente (seg a dom) com base na data real de hoje,
+  // independente do mês/ano selecionado acima nos outros cards do painel.
+  const hojeStrLembrete = hojeISO();
+  const { inicioSemana, fimSemana } = (() => {
+    const diaSemana = hoje.getDay(); // 0=Dom .. 6=Sáb
+    const seg = new Date(hoje); seg.setDate(hoje.getDate() - ((diaSemana + 6) % 7));
+    const dom = new Date(seg); dom.setDate(seg.getDate() + 6);
+    const toISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return { inicioSemana: toISO(seg), fimSemana: toISO(dom) };
+  })();
+  const pendenciasSemana = ativas
+    .filter((tx) => tx.status === "pendente" && tx.data && tx.data >= inicioSemana && tx.data <= fimSemana)
+    .sort((a, b) => (a.data || "").localeCompare(b.data || ""));
+  const despesasPendentesSemana = pendenciasSemana.filter((tx) => tx.tipo === "Despesa");
+  const receitasPendentesSemana = pendenciasSemana.filter((tx) => tx.tipo === "Receita");
+  const totalDespesasPendentesSemana = despesasPendentesSemana.reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  const totalReceitasPendentesSemana = receitasPendentesSemana.reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  const pizzaLembretesSemana = [
+    { name: "Despesas pendentes", value: totalDespesasPendentesSemana, color: t.danger },
+    { name: "Receitas pendentes", value: totalReceitasPendentesSemana, color: t.primary }
+  ].filter((d) => d.value > 0);
+  const urgenciaTx = (tx) => tx.data < hojeStrLembrete ? "atrasado" : (tx.data === hojeStrLembrete ? "hoje" : "semana");
+
   const cards = [
     { label: "Saldo Atual", valor: saldoAtual, icon: Wallet, tone: t.primary },
     { label: "Receitas do Mês", valor: receitasMes, icon: TrendingUp, tone: t.primary },
@@ -1022,18 +1117,82 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
             {contasAtivas.length === 0 ? (
               <EmptyState t={t} text="Nenhuma conta cadastrada ainda." />
             ) : (
-              <div style={{ overflowX: "auto" }}>
+              <div style={{ overflowX: "auto", overflowY: "hidden" }}>
                 <div style={{ minWidth: Math.max(240, contasAtivas.length * 90) }}>
                   <ResponsiveContainer width="100%" height={180}>
                     <BarChart data={contasAtivas.map((c) => ({ nome: c.nomeConta, saldo: saldoConta(c, db.transacoes) }))}>
                       <CartesianGrid stroke={t.border} vertical={false} />
                       <XAxis dataKey="nome" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={{ stroke: t.border }} tickLine={false} interval={0} angle={-15} textAnchor="end" height={40} />
                       <YAxis hide />
-                      <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => (ocultarValores ? "••••" : fmtBRL(v))} />
+                      <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => (ocultarValores ? "••••" : fmtBRL(v))} />
                       <Bar dataKey="saldo" fill={t.primary} radius={[6, 6, 0, 0]} barSize={28} isAnimationActive={false} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ background: t.surface, border: `2px solid ${t.accent}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
+            <SectionTitle t={t} title="Lembretes da Semana" icon={Bell} />
+            <div style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 14px" }}>{dataBR(inicioSemana)} a {dataBR(fimSemana)}</div>
+
+            {pizzaLembretesSemana.length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+                <ResponsiveContainer width={110} height={110}>
+                  <PieChart>
+                    <Pie data={pizzaLembretesSemana} dataKey="value" nameKey="name" innerRadius={30} outerRadius={52} paddingAngle={3} isAnimationActive={false}>
+                      {pizzaLembretesSemana.map((d, i) => <Cell key={i} fill={d.color} />)}
+                    </Pie>
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: t.textMuted }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.danger, flexShrink: 0 }} /> Despesas pendentes
+                    </div>
+                    <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: t.danger }}>{ocultarValores ? "••••" : fmtBRL(totalDespesasPendentesSemana)}</div>
+                  </div>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: t.textMuted }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: t.primary, flexShrink: 0 }} /> Receitas pendentes
+                    </div>
+                    <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: t.primary }}>{ocultarValores ? "••••" : fmtBRL(totalReceitasPendentesSemana)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {pendenciasSemana.length === 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "16px 10px", gap: 8 }}>
+                <PartyPopper size={24} color={t.primary} />
+                <div style={{ fontSize: 12.5, color: t.textMuted }}>Nenhum lembrete pendente para esta semana!</div>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" }}>
+                {pendenciasSemana.map((tx) => {
+                  const urg = urgenciaTx(tx);
+                  const corBorda = tx.tipo === "Despesa" ? t.danger : t.primary;
+                  return (
+                    <div key={tx.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 10px", background: t.surfaceAlt, borderRadius: 9, borderLeft: `3px solid ${corBorda}` }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tx.descricao}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 3 }}>
+                          <span className="mono" style={{ fontSize: 10.5, color: t.textMuted }}>{dataBR(tx.data)}</span>
+                          <span style={{
+                            fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3, padding: "1px 6px", borderRadius: 5,
+                            background: urg === "atrasado" ? `${t.danger}22` : urg === "hoje" ? `${t.accent}22` : `${t.textMuted}18`,
+                            color: urg === "atrasado" ? t.danger : urg === "hoje" ? t.accent : t.textMuted
+                          }}>
+                            {urg === "atrasado" ? "Atrasado" : urg === "hoje" ? "Hoje" : "Esta semana"}
+                          </span>
+                        </div>
+                      </div>
+                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 700, color: corBorda, flexShrink: 0 }}>{ocultarValores ? "••••" : fmtBRL(tx.valor)}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1077,7 +1236,7 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
               <CartesianGrid stroke={t.border} vertical={false} />
               <XAxis dataKey="mes" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={{ stroke: t.border }} tickLine={false} />
               <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+              <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
               <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
               <Area type="monotone" dataKey="receita" name="Receita" stroke={t.primary} fill="url(#gradReceita)" strokeWidth={2} isAnimationActive={false} />
               <Area type="monotone" dataKey="despesa" name="Despesa" stroke={t.danger} fill="url(#gradDespesa)" strokeWidth={2} isAnimationActive={false} />
@@ -1205,7 +1364,7 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
                 <CartesianGrid stroke={t.border} vertical={false} />
                 <XAxis dataKey="categoria" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={{ stroke: t.border }} tickLine={false} interval={0} angle={-20} textAnchor="end" height={50} />
                 <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} unit="%" />
-                <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => `${v}%`} />
+                <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => `${v}%`} />
                 <Bar dataKey="pct" name="% da receita" radius={[4, 4, 0, 0]} isAnimationActive={false}>
                   {percentualPorCategoria.map((d, i) => <Cell key={i} fill={d.cor} />)}
                 </Bar>
@@ -1226,7 +1385,7 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
                   <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78} paddingAngle={3} isAnimationActive={false}>
                     {donutData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                   </Pie>
-                  <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                  <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                   <Legend wrapperStyle={{ fontSize: 11, color: t.text }} />
                 </PieChart>
               </ResponsiveContainer>
@@ -1683,9 +1842,9 @@ function ModalExtrato({ t, db, conta, onClose }) {
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
         <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, color: t.textMuted, fontWeight: 600 }}><Calendar size={12} /> Período:</span>
-        <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 7px", fontSize: 12, width: "auto", minWidth: 130, flexShrink: 0 }} />
+        <input type="date" value={dataIni} onChange={(e) => { if (e.target.value) setDataIni(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 7px", fontSize: 12, width: "auto", minWidth: 130, flexShrink: 0 }} />
         <span style={{ fontSize: 11.5, color: t.textMuted }}>até</span>
-        <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 7px", fontSize: 12, width: "auto", minWidth: 130, flexShrink: 0 }} />
+        <input type="date" value={dataFim} onChange={(e) => { if (e.target.value) setDataFim(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 7px", fontSize: 12, width: "auto", minWidth: 130, flexShrink: 0 }} />
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, color: t.textMuted, marginBottom: 12 }}>
         <span>{movimentos.length} lançamento(s) no período</span>
@@ -1949,6 +2108,18 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
   const [filtroCartao, setFiltroCartao] = useState(""); // "" = todos os cartões
   const [dataIni, setDataIni] = useState(primeiroDiaMesAtualISO());
   const [dataFim, setDataFim] = useState(ultimoDiaMesAtualISO());
+  const [busca, setBusca] = useState("");
+  const [sortCol, setSortCol] = useState("data"); // data | descricao | origem | cartao | valor | status
+  const [sortDir, setSortDir] = useState("desc"); // asc | desc
+
+  const alternarOrdenacao = (coluna) => {
+    if (sortCol === coluna) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortCol(coluna);
+      setSortDir(coluna === "data" || coluna === "valor" ? "desc" : "asc");
+    }
+  };
 
   useEffect(() => {
     if (intent) {
@@ -1960,7 +2131,7 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
 
   useEffect(() => {
     setQtdVisivel(40);
-  }, [filtro, filtroStatus, filtroCategoria, filtroSubcategoria, filtroCartao, dataIni, dataFim]);
+  }, [filtro, filtroStatus, filtroCategoria, filtroSubcategoria, filtroCartao, dataIni, dataFim, busca]);
 
   const criarSubcategoriaRapida = (categoriaId, nome) => {
     const nova = { id: uid(), categoriaId, nome: nome.trim(), status: "ativo" };
@@ -2100,14 +2271,30 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
     .filter((tx) => !dataFim || (tx.data && tx.data <= dataFim)),
     [todas, dataIni, dataFim]
   );
+  const STATUS_ORDEM = { pendente: 0, concluido: 1, cancelado: 2 };
+  const compararTx = (a, b) => {
+    let cmp = 0;
+    switch (sortCol) {
+      case "descricao": cmp = (a.descricao || "").localeCompare(b.descricao || "", "pt-BR"); break;
+      case "origem": cmp = origemNome(db, a).localeCompare(origemNome(db, b), "pt-BR"); break;
+      case "cartao": cmp = (cartaoNome(db, a) || "").localeCompare(cartaoNome(db, b) || "", "pt-BR"); break;
+      case "valor": cmp = (Number(a.valor) || 0) - (Number(b.valor) || 0); break;
+      case "status": cmp = (STATUS_ORDEM[a.status] ?? 9) - (STATUS_ORDEM[b.status] ?? 9); break;
+      case "data":
+      default: cmp = (a.data || "").localeCompare(b.data || ""); break;
+    }
+    if (cmp === 0) cmp = (a.data || "").localeCompare(b.data || ""); // desempate estável por data
+    return sortDir === "asc" ? cmp : -cmp;
+  };
   const lista = useMemo(() => noPeriodo
     .filter((tx) => filtro === "todas" || tx.tipo === filtro)
     .filter((tx) => filtroStatus === "todos" || tx.status === filtroStatus)
     .filter((tx) => !filtroCategoria || tx.categoriaId === filtroCategoria)
     .filter((tx) => !filtroSubcategoria || tx.subcategoriaId === filtroSubcategoria)
     .filter((tx) => !filtroCartao || (tx.origemTipo === "cartao" && tx.origemId === filtroCartao))
-    .sort((a, b) => (b.data || "").localeCompare(a.data || "")),
-    [noPeriodo, filtro, filtroStatus, filtroCategoria, filtroSubcategoria, filtroCartao]
+    .filter((tx) => !busca.trim() || (tx.descricao || "").toLowerCase().includes(busca.trim().toLowerCase()))
+    .sort(compararTx),
+    [noPeriodo, filtro, filtroStatus, filtroCategoria, filtroSubcategoria, filtroCartao, busca, sortCol, sortDir, db]
   );
 
   const categoriasDisponiveis = ordenarPorNome(db.categorias.filter((c) => c.status === "ativo"));
@@ -2131,6 +2318,16 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
     { label: "Receita Total", valor: somaOnde("Receita", (s) => s !== "cancelado"), icon: ArrowUpCircle, tone: t.primary }
   ];
 
+  // Total do que está visível na lista filtrada agora (respeitando todos os filtros ativos: tipo, status, categoria, cartão, período, busca) —
+  // usado no chip "Total filtrado" entre as abas e os botões de ação, atualizando dinamicamente a cada mudança de filtro.
+  const totalDespesasListaFiltrada = lista.filter((tx) => tx.tipo === "Despesa").reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  const totalReceitasListaFiltrada = lista.filter((tx) => tx.tipo === "Receita").reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+  const totalFiltrado = filtro === "Receita"
+    ? { label: "Total filtrado (Receitas)", valor: totalReceitasListaFiltrada, tone: t.primary }
+    : filtro === "Despesa"
+    ? { label: "Total filtrado (Despesas)", valor: totalDespesasListaFiltrada, tone: t.danger }
+    : { label: "Total filtrado (Receitas − Despesas)", valor: totalReceitasListaFiltrada - totalDespesasListaFiltrada, tone: (totalReceitasListaFiltrada - totalDespesasListaFiltrada) >= 0 ? t.primary : t.danger };
+
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 }}>
@@ -2147,7 +2344,7 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
         ))}
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6, background: t.surfaceAlt, padding: 4, borderRadius: 10 }}>
             {[["todas", "Todas"], ["Receita", "Receitas"], ["Despesa", "Despesas"]].map(([id, label]) => (
@@ -2164,6 +2361,14 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
             ))}
           </div>
         </div>
+
+        <div style={{ display: "flex", justifyContent: "center", flex: 1, minWidth: 220 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: t.surface, border: `1.5px solid ${totalFiltrado.tone}`, borderRadius: 10, padding: "8px 18px" }}>
+            <span style={{ fontSize: 11.5, color: t.textMuted, fontWeight: 600, whiteSpace: "nowrap" }}>{totalFiltrado.label}:</span>
+            <span className="mono" style={{ fontSize: 15, fontWeight: 700, color: totalFiltrado.tone, whiteSpace: "nowrap" }}>{fmtBRL(totalFiltrado.valor)}</span>
+          </div>
+        </div>
+
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => setModalBaixa({})} style={{ ...btnGhost(t), fontWeight: 600 }}>
             <CheckCircle2 size={15} /> Dar Baixa em Lote
@@ -2176,9 +2381,9 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap", background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: "8px 12px" }}>
         <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: t.textMuted, fontWeight: 600 }}><Calendar size={13} /> Período:</span>
-        <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
+        <input type="date" value={dataIni} onChange={(e) => { if (e.target.value) setDataIni(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
         <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
-        <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
+        <input type="date" value={dataFim} onChange={(e) => { if (e.target.value) setDataFim(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
         {(dataIni || dataFim) && (
           <button onClick={() => { setDataIni(""); setDataFim(""); }} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600 }}>
             <X size={12} /> limpar
@@ -2195,6 +2400,17 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
             <X size={12} /> limpar
           </button>
         )}
+        <span style={{ width: 1, alignSelf: "stretch", background: t.border, margin: "0 2px" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 180 }}>
+          <Search size={13} color={t.textMuted} style={{ flexShrink: 0 }} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar descrição…"
+            style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "100%" }} />
+        </div>
+        {busca && (
+          <button onClick={() => setBusca("")} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+            <X size={12} /> limpar
+          </button>
+        )}
       </div>
 
       {totalContasCartoes === 0 && <EmptyState t={t} text="Cadastre pelo menos uma conta em “Contas” antes de lançar transações — toda transação precisa de uma origem." />}
@@ -2207,8 +2423,12 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ color: t.textMuted, textAlign: "left" }}>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>Data</th>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>Descrição</th>
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("data")} title="Ordenar por data">
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Data {sortCol === "data" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
+                  </th>
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("descricao")} title="Ordenar por descrição">
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Descrição {sortCol === "descricao" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
+                  </th>
                   <th style={{ ...thStyle, padding: "12px 16px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                       Categoria
@@ -2229,10 +2449,18 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                       </select>
                     </div>
                   </th>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>Origem</th>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>Cartão</th>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>Valor</th>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>Status</th>
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("origem")} title="Agrupar por origem">
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Origem {sortCol === "origem" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
+                  </th>
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("cartao")} title="Agrupar por cartão">
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Cartão {sortCol === "cartao" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
+                  </th>
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("valor")} title="Ordenar por valor">
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Valor {sortCol === "valor" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
+                  </th>
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("status")} title="Agrupar por status">
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Status {sortCol === "status" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
+                  </th>
                   <th style={{ ...thStyle, padding: "12px 16px" }}></th>
                 </tr>
               </thead>
@@ -3007,9 +3235,9 @@ const MetasView = React.memo(function MetasView({ t, db, onChange }) {
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-              <input type="date" value={dataIniResumo} onChange={(e) => setDataIniResumo(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" }} />
+              <input type="date" value={dataIniResumo} onChange={(e) => { if (e.target.value) setDataIniResumo(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" }} />
               <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
-              <input type="date" value={dataFimResumo} onChange={(e) => setDataFimResumo(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" }} />
+              <input type="date" value={dataFimResumo} onChange={(e) => { if (e.target.value) setDataFimResumo(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto" }} />
             </div>
           )}
 
@@ -3530,9 +3758,9 @@ const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
           <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: t.textMuted, fontWeight: 600 }}><Calendar size={13} /> Período:</span>
-          <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
+          <input type="date" value={dataIni} onChange={(e) => { if (e.target.value) setDataIni(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
           <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
-          <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
+          <input type="date" value={dataFim} onChange={(e) => { if (e.target.value) setDataFim(e.target.value); }} style={{ ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 }} />
           {(dataIni || dataFim) && (
             <button onClick={() => { setDataIni(""); setDataFim(""); }} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600 }}>
               <X size={12} /> limpar
@@ -3724,6 +3952,8 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
   const [filtroCategoria, setFiltroCategoria] = useState("");
   const [filtroStatus, setFiltroStatus] = useState(""); // "" | pendente | concluido
   const [busca, setBusca] = useState("");
+  const [verTodasPagas, setVerTodasPagas] = useState(false);
+  const [verTodasPendentes, setVerTodasPendentes] = useState(false);
 
   const contasAtivas = ordenarPorNome((db.contas || []).filter((c) => c.status === "ativo"), "nomeConta");
   const cartoesAtivos = ordenarPorNome((db.cartoes || []).filter((c) => c.status === "ativo"));
@@ -3819,6 +4049,9 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
 
   const top10Despesas = filtradas.filter((tx) => tx.tipo === "Despesa").slice().sort((a, b) => (Number(b.valor) || 0) - (Number(a.valor) || 0)).slice(0, 10);
 
+  const despesasPagas = filtradas.filter((tx) => tx.tipo === "Despesa" && tx.status === "concluido").slice().sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+  const despesasPendentes = filtradas.filter((tx) => tx.tipo === "Despesa" && tx.status === "pendente").slice().sort((a, b) => (a.data || "").localeCompare(b.data || ""));
+
   const limparFiltros = () => {
     setDataIni(primeiroDiaMesAtualISO()); setDataFim(ultimoDiaMesAtualISO());
     setFiltroTipo(""); setFiltroOrigem(""); setFiltroCategoria(""); setFiltroStatus(""); setBusca("");
@@ -3843,9 +4076,9 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 18, flexWrap: "wrap", background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: "8px 12px" }}>
         <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: t.textMuted, fontWeight: 600 }}><Calendar size={13} /> Período:</span>
-        <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...selectFiltro, minWidth: 130, flexShrink: 0 }} />
+        <input type="date" value={dataIni} onChange={(e) => { if (e.target.value) setDataIni(e.target.value); }} style={{ ...selectFiltro, minWidth: 130, flexShrink: 0 }} />
         <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
-        <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...selectFiltro, minWidth: 130, flexShrink: 0 }} />
+        <input type="date" value={dataFim} onChange={(e) => { if (e.target.value) setDataFim(e.target.value); }} style={{ ...selectFiltro, minWidth: 130, flexShrink: 0 }} />
 
         <span style={{ width: 1, alignSelf: "stretch", background: t.border, margin: "0 2px" }} />
 
@@ -3921,7 +4154,7 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
                     <CartesianGrid stroke={t.border} vertical={false} />
                     <XAxis dataKey="data" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
                     <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                     <Area type="monotone" dataKey="saldo" name="Saldo acumulado" stroke={t.primary} fill="url(#gradSaldoAnalista)" strokeWidth={2} isAnimationActive={false} />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -3935,7 +4168,7 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
                     <CartesianGrid stroke={t.border} vertical={false} />
                     <XAxis dataKey="data" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
                     <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                     <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
                     <Bar dataKey="Receita" fill={t.primary} radius={[4, 4, 0, 0]} isAnimationActive={false} />
                     <Bar dataKey="Despesa" fill={t.danger} radius={[4, 4, 0, 0]} isAnimationActive={false} />
@@ -3953,7 +4186,7 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
                     <CartesianGrid stroke={t.border} horizontal={false} />
                     <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
                     <YAxis type="category" dataKey="categoria" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                     <Bar dataKey="total" name="Despesas" radius={[0, 4, 4, 0]} isAnimationActive={false}>
                       {despesasPorCategoria.map((d, i) => <Cell key={i} fill={d.cor} />)}
                     </Bar>
@@ -3969,7 +4202,7 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
                     <CartesianGrid stroke={t.border} horizontal={false} />
                     <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
                     <YAxis type="category" dataKey="subcategoria" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                     <Bar dataKey="total" name="Despesas" fill={t.danger} radius={[0, 4, 4, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -3985,7 +4218,7 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
                     <CartesianGrid stroke={t.border} horizontal={false} />
                     <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
                     <YAxis type="category" dataKey="origem" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={120} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                     <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
                     <Bar dataKey="Receita" fill={t.primary} radius={[0, 4, 4, 0]} isAnimationActive={false} />
                     <Bar dataKey="Despesa" fill={t.danger} radius={[0, 4, 4, 0]} isAnimationActive={false} />
@@ -4027,6 +4260,68 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
                 );
               })}
             </div>
+          </div>
+
+          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 14 }}>
+            <SectionTitle t={t} title="Despesas Pagas e Pendentes" icon={CheckCircle2} />
+            {despesasPagas.length === 0 && despesasPendentes.length === 0 ? (
+              <EmptyState t={t} text="Nenhuma despesa no período filtrado." />
+            ) : (
+              <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 4 }}>
+                {[
+                  { titulo: "Pagas", dados: despesasPagas, cor: t.primary, verTodas: verTodasPagas, setVerTodas: setVerTodasPagas },
+                  { titulo: "Pendentes", dados: despesasPendentes, cor: t.accent, verTodas: verTodasPendentes, setVerTodas: setVerTodasPendentes }
+                ].map(({ titulo, dados, cor, verTodas, setVerTodas }) => {
+                  const LIMITE = 6;
+                  const exibidas = verTodas ? dados : dados.slice(0, LIMITE);
+                  const total = dados.reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+                  return (
+                    <div key={titulo}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: cor }} /> {titulo}
+                          <span style={{ color: t.textMuted, fontWeight: 500 }}>({dados.length})</span>
+                        </span>
+                        <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: t.textMuted }}>{fmtBRL(total)}</span>
+                      </div>
+                      {dados.length === 0 ? (
+                        <p style={{ fontSize: 12, color: t.textMuted }}>Nenhuma despesa {titulo === "Pagas" ? "paga" : "pendente"} no período.</p>
+                      ) : (
+                        <>
+                          <div style={{ overflowX: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                              <thead>
+                                <tr>
+                                  {["Data", "Descrição", "Categoria", "Valor"].map((h, i) => (
+                                    <th key={h} style={{ textAlign: i === 3 ? "right" : "left", padding: "6px 8px", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.3, color: t.textMuted, borderBottom: `1px solid ${t.border}` }}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {exibidas.map((tx) => (
+                                  <tr key={tx.id}>
+                                    <td style={tdStyle(t)}>{dataBR(tx.data)}</td>
+                                    <td style={{ ...tdStyle(t), color: t.text, fontWeight: 500 }}>{tx.descricao}</td>
+                                    <td style={tdStyle(t)}>{categoriaNome(db, tx) || "—"}</td>
+                                    <td className="mono" style={{ ...tdStyle(t), textAlign: "right", fontWeight: 600, color: t.text }}>{fmtBRL(tx.valor)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {dados.length > LIMITE && (
+                            <button onClick={() => setVerTodas(!verTodas)} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600, marginTop: 10, cursor: "pointer", padding: 0 }}>
+                              {verTodas ? "Exibir menos" : `Exibir mais (${dados.length - LIMITE})`}
+                              <ChevronRight size={13} style={{ transform: verTodas ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform .15s" }} />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 14 }}>
@@ -4077,11 +4372,97 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
   const [filtroClassePizza, setFiltroClassePizza] = useState(""); // "" = tudo (por classe) | "Ações" etc. (por ativo dentro da classe)
   const [filtroClasseLista, setFiltroClasseLista] = useState(""); // "" = todas as classes
   const [classeExpandida, setClasseExpandida] = useState(null);
+  const [editandoMetas, setEditandoMetas] = useState(false);
+  const [rascunhoMetas, setRascunhoMetas] = useState({});
+  const [rascunhoBrapiToken, setRascunhoBrapiToken] = useState("");
+  const [atualizandoPrecos, setAtualizandoPrecos] = useState(false);
+  const [erroPrecos, setErroPrecos] = useState("");
+  const [mensagemPrecos, setMensagemPrecos] = useState("");
+  const [aporteCentavos, setAporteCentavos] = useState(0);
+  const [classeExpandidaSugestao, setClasseExpandidaSugestao] = useState(null);
+  const [verTodosEmissores, setVerTodosEmissores] = useState(false);
 
   const ativos = db.ativos || [];
   const indices = db.indices || INDICES_PADRAO;
   const metaRendaMensal = Number(db.metaRendaMensal) || 0;
+  const metasClasse = db.metasClasse || {};
   const ativoAberto = ativos.find((a) => a.id === ativoAbertoId);
+
+  const salvarMetas = () => {
+    const limpo = {};
+    Object.keys(rascunhoMetas).forEach((classe) => { const v = Number(rascunhoMetas[classe]); if (v > 0) limpo[classe] = v; });
+    const next = { ...db, metasClasse: limpo };
+    onChange(next, { tipoOperacao: "edição", entidade: "Meta de Alocação", entidadeId: "metasClasse", detalhe: "Metas de alocação por classe atualizadas" });
+    setEditandoMetas(false);
+  };
+
+  const salvarBrapiToken = () => {
+    const next = { ...db, brapiToken: rascunhoBrapiToken.trim() };
+    onChange(next, { tipoOperacao: "edição", entidade: "Token brapi.dev", entidadeId: "brapiToken", detalhe: rascunhoBrapiToken.trim() ? "Token configurado" : "Token removido" });
+  };
+
+  const atualizarPrecos = async () => {
+    setAtualizandoPrecos(true);
+    setErroPrecos("");
+    setMensagemPrecos("");
+    const atualizacoes = {}; // id do ativo -> { precoAtual, variacaoDiaPct, precoAtualizadoEm }
+    try {
+      const ativosComTicker = ativosAtivos.filter((a) => CLASSES_COM_TICKER_BRAPI.includes(a.tipo) && a.ticker?.trim());
+      const ativosComCripto = ativosAtivos.filter((a) => CLASSES_COM_ID_COINGECKO.includes(a.tipo) && a.coinGeckoId?.trim());
+
+      if (ativosComTicker.length > 0) {
+        const tickersUnicos = [...new Set(ativosComTicker.map((a) => a.ticker.trim().toUpperCase()))];
+        for (const tk of tickersUnicos) {
+          try {
+            const token = (db.brapiToken || "").trim();
+            const url = `https://brapi.dev/api/quote/${encodeURIComponent(tk)}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+            const resp = await fetch(url);
+            const json = await resp.json();
+            const r = (json?.results || [])[0];
+            if (r && typeof r.regularMarketPrice === "number") {
+              const variacaoPct = typeof r.regularMarketChangePercent === "number" ? r.regularMarketChangePercent
+                : (typeof r.regularMarketChange === "number" && r.regularMarketPrice - r.regularMarketChange !== 0
+                  ? (r.regularMarketChange / (r.regularMarketPrice - r.regularMarketChange)) * 100 : null);
+              ativosComTicker.filter((a) => a.ticker.trim().toUpperCase() === tk).forEach((a) => {
+                atualizacoes[a.id] = { precoAtual: r.regularMarketPrice, variacaoDiaPct: variacaoPct, precoAtualizadoEm: nowISO() };
+              });
+            }
+          } catch (e) { /* segue tentando os outros tickers mesmo se um falhar */ }
+        }
+      }
+
+      if (ativosComCripto.length > 0) {
+        const idsUnicos = [...new Set(ativosComCripto.map((a) => a.coinGeckoId.trim().toLowerCase()))];
+        try {
+          const url = `https://api.coingecko.com/api/v3/simple/price?ids=${idsUnicos.map(encodeURIComponent).join(",")}&vs_currencies=brl&include_24hr_change=true`;
+          const resp = await fetch(url);
+          const json = await resp.json();
+          ativosComCripto.forEach((a) => {
+            const id = a.coinGeckoId.trim().toLowerCase();
+            const d = json?.[id];
+            if (d && typeof d.brl === "number") {
+              atualizacoes[a.id] = { precoAtual: d.brl, variacaoDiaPct: typeof d.brl_24h_change === "number" ? d.brl_24h_change : null, precoAtualizadoEm: nowISO() };
+            }
+          });
+        } catch (e) { /* CoinGecko fora do ar não impede as cotações da brapi de terem funcionado */ }
+      }
+
+      if (ativosComTicker.length === 0 && ativosComCripto.length === 0) {
+        setErroPrecos("Nenhum ativo com ticker (Ações/FIIs) ou ID da CoinGecko (Criptomoedas) cadastrado ainda.");
+      } else if (Object.keys(atualizacoes).length === 0) {
+        setErroPrecos("Não foi possível buscar nenhuma cotação agora — confira os tickers/IDs cadastrados e sua conexão com a internet.");
+      } else {
+        const next = { ...db, ativos: db.ativos.map((a) => atualizacoes[a.id] ? { ...a, ...atualizacoes[a.id] } : a) };
+        onChange(next, { tipoOperacao: "edição", entidade: "Cotações", entidadeId: "atualizacao-precos", detalhe: `${Object.keys(atualizacoes).length} ativo(s) atualizado(s)` });
+        const faltaram = ativosComTicker.length + ativosComCripto.length - Object.keys(atualizacoes).length;
+        setMensagemPrecos(`${Object.keys(atualizacoes).length} cotação(ões) atualizada(s)${faltaram > 0 ? ` — ${faltaram} não retornaram dado` : ""}.`);
+      }
+    } catch (e) {
+      setErroPrecos("Não foi possível buscar as cotações agora. Tente novamente em instantes.");
+    } finally {
+      setAtualizandoPrecos(false);
+    }
+  };
 
   const salvarAtivo = (dados) => {
     let next = { ...db };
@@ -4227,6 +4608,13 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
   }
   const classesParaListar = filtroClasseLista ? dadosPorClasse.filter((g) => g.classe === filtroClasseLista) : dadosPorClasse;
 
+  // Sugestão de Aportes — compara % atual x % ideal (metasClasse) por classe, distribui o aporte informado
+  // e, dentro de cada classe sugerida, sugere quais ativos já cadastrados receberem o valor.
+  const somaMetas = Object.values(metasClasse).reduce((s, v) => s + (Number(v) || 0), 0);
+  const aporte = aporteCentavos / 100;
+  const sugestaoClasses = sugerirAportePorClasse(dadosPorClasse, metasClasse, aporte, totalCarteira)
+    .map((s) => ({ ...s, ativosSugeridos: sugerirAporteAtivosDaClasse((dadosPorClasse.find((g) => g.classe === s.classe)?.ativos) || [], s.valorSugerido) }));
+
   // Evolução do patrimônio: base = valor líquido aplicado (aportes − resgates) | topo = ganho de capital (valorização)
   const construirBucketsMensais = (qtdMeses) => Array.from({ length: qtdMeses }, (_, i) => {
     const d = new Date(hoje.getFullYear(), hoje.getMonth() - (qtdMeses - 1 - i), 1);
@@ -4295,6 +4683,130 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
         <button onClick={() => setModal({})} style={btnPrimary(t)}><Plus size={15} /> Novo Ativo</button>
       </div>
 
+      <div className="no-print" style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+          <SectionTitle t={t} title="Sugestão de Aportes" icon={Wand2} />
+          <button onClick={() => { setRascunhoMetas({ ...metasClasse }); setRascunhoBrapiToken(db.brapiToken || ""); setEditandoMetas(true); }} style={{ ...btnGhost(t), fontSize: 12 }}>
+            <Pencil size={12} /> Metas de alocação
+          </button>
+        </div>
+        <p style={{ fontSize: 12, color: t.textMuted, margin: "-2px 0 14px", maxWidth: 640 }}>
+          Compara sua alocação atual com as metas por classe, informe quanto vai aportar e veja em quais classes — e em quais ativos dentro delas — o valor deve entrar para buscar o balanceamento ideal.
+        </p>
+
+        {somaMetas === 0 ? (
+          <EmptyState t={t} text='Nenhuma meta de alocação definida ainda. Clique em "Metas de alocação" acima para começar (ex: Renda Fixa 40%, Ações 30%, FIIs 20%, Criptomoedas 10%).' />
+        ) : (
+          <>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${t.border}` }}>
+              <Field label="Valor a aportar" t={t} icon={<span className="mono" style={{ fontSize: 12 }}>R$</span>}>
+                <CurrencyInput t={t} centavos={aporteCentavos} onChange={setAporteCentavos} placeholder="0,00" />
+              </Field>
+              <button onClick={atualizarPrecos} disabled={atualizandoPrecos} style={{ ...btnGhost(t), opacity: atualizandoPrecos ? 0.6 : 1 }}>
+                {atualizandoPrecos ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Atualizar preços do dia
+              </button>
+              {mensagemPrecos && <span style={{ fontSize: 11.5, color: t.primary }}>{mensagemPrecos}</span>}
+              {erroPrecos && <span style={{ fontSize: 11.5, color: t.danger }}>{erroPrecos}</span>}
+            </div>
+
+            {aporte <= 0 ? (
+              <EmptyState t={t} text="Informe o valor que vai aportar acima para ver a sugestão de distribuição." />
+            ) : sugestaoClasses.length === 0 ? (
+              <EmptyState t={t} text="Sua carteira já está alinhada com as metas definidas — não há classe atrasada para priorizar com esse aporte." />
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {sugestaoClasses.map((s) => {
+                  const grupo = dadosPorClasse.find((g) => g.classe === s.classe);
+                  const Icone = grupo?.Icone || TrendingUp;
+                  const cor = grupo?.cor || t.primary;
+                  const expandida = classeExpandidaSugestao === s.classe;
+                  return (
+                    <div key={s.classe} style={{ border: `1px solid ${t.border}`, borderRadius: 12, overflow: "hidden" }}>
+                      <button onClick={() => setClasseExpandidaSugestao(expandida ? null : s.classe)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 14, background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
+                        <div style={{ width: 34, height: 34, borderRadius: 9, background: `${cor}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <Icone size={15} color={cor} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 120 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13.5 }}>{s.classe}</div>
+                          <div style={{ fontSize: 11, color: t.textMuted }}>{s.pctAtual.toFixed(1)}% atual → {s.pctFuturo.toFixed(1)}% após aportar (meta {s.pctIdeal.toFixed(0)}%)</div>
+                        </div>
+                        <div className="mono" style={{ fontSize: 15, fontWeight: 700, color: cor, flexShrink: 0 }}>{fmtBRL(s.valorSugerido)}</div>
+                        <ChevronRight size={15} style={{ transform: expandida ? "rotate(90deg)" : "none", transition: "transform .15s", flexShrink: 0, color: t.textMuted }} />
+                      </button>
+                      {expandida && (
+                        <div style={{ borderTop: `1px solid ${t.border}`, padding: "10px 14px 14px" }}>
+                          {s.ativosSugeridos.length === 0 ? (
+                            <p style={{ fontSize: 12, color: t.textMuted, margin: 0 }}>Nenhum ativo cadastrado nessa classe ainda — cadastre um novo ativo em "{s.classe}" para aportar aqui.</p>
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              {s.ativosSugeridos.map((r) => (
+                                <div key={r.ativo.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 12.5 }}>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.ativo.nome}</div>
+                                    <div style={{ fontSize: 10.5, color: t.textMuted, display: "flex", gap: 6, alignItems: "center" }}>
+                                      {fmtBRL(r.valorAtual)} hoje
+                                      {typeof r.ativo.precoAtual === "number" && (
+                                        <span style={{ color: typeof r.ativo.variacaoDiaPct === "number" ? (r.ativo.variacaoDiaPct >= 0 ? t.primary : t.danger) : t.textMuted, fontWeight: 600 }}>
+                                          · cotação {fmtBRL(r.ativo.precoAtual)}{typeof r.ativo.variacaoDiaPct === "number" ? ` (${r.ativo.variacaoDiaPct >= 0 ? "+" : ""}${r.ativo.variacaoDiaPct.toFixed(2)}% hoje)` : ""}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="mono" style={{ fontWeight: 700, fontSize: 13, flexShrink: 0 }}>{fmtBRL(r.valorSugerido)}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {editandoMetas && (
+          <ModalShell t={t} title="Metas de Alocação por Classe" onClose={() => setEditandoMetas(false)}>
+            <p style={{ fontSize: 12, color: t.textMuted, marginBottom: 14 }}>Quanto (%) da sua carteira você quer ter em cada classe. Não precisa preencher todas — deixe 0 nas que não usa.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 6 }}>
+              {TIPOS_ATIVO.map((classe) => (
+                <div key={classe} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ flex: 1, fontSize: 13 }}>{classe}</span>
+                  <input
+                    type="number" min="0" max="100" step="1"
+                    value={rascunhoMetas[classe] ?? ""}
+                    onChange={(e) => setRascunhoMetas((prev) => ({ ...prev, [classe]: e.target.value }))}
+                    style={{ ...inputStyle(t), width: 70, border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", textAlign: "right" }}
+                    placeholder="0"
+                  />
+                  <span style={{ fontSize: 12, color: t.textMuted, width: 12 }}>%</span>
+                </div>
+              ))}
+            </div>
+            {(() => {
+              const soma = Object.values(rascunhoMetas).reduce((s, v) => s + (Number(v) || 0), 0);
+              return <p style={{ fontSize: 12, fontWeight: 600, color: soma === 100 ? t.primary : t.danger, marginBottom: 14 }}>Soma atual: {soma}% {soma !== 100 ? "(o ideal é somar 100%)" : ""}</p>;
+            })()}
+
+            <div style={{ borderTop: `1px solid ${t.border}`, paddingTop: 14, marginTop: 4 }}>
+              <Field label="Token brapi.dev (opcional)" t={t} icon={<RefreshCw size={14} />}>
+                <input value={rascunhoBrapiToken} onChange={(e) => setRascunhoBrapiToken(e.target.value)} style={inputStyle(t)} placeholder="Cole aqui seu token gratuito" />
+              </Field>
+              <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 14px" }}>
+                Necessário para cotação automática de Ações e FIIs (crie grátis em brapi.dev/dashboard). Fica salvo nos seus dados e é usado só pelo seu navegador — como o app não tem servidor próprio, evite usar aqui um token que você usa em outro sistema importante.
+              </p>
+              <button onClick={salvarBrapiToken} style={{ ...btnGhost(t), width: "100%", justifyContent: "center", marginBottom: 10 }}>Salvar token</button>
+            </div>
+
+            <button onClick={salvarMetas} style={{ ...btnPrimary(t), width: "100%", justifyContent: "center" }}>
+              <Check size={15} /> Salvar metas
+            </button>
+          </ModalShell>
+        )}
+      </div>
+
       <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 14, marginBottom: 14 }}>
         <ChartCard t={t} title="Evolução do Patrimônio" subtitle="Valor aplicado (aportes líquidos) + ganho de capital (valorização)">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
@@ -4309,14 +4821,14 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
             ))}
           </div>
           {dadosEvolucaoPatrimonio.every((d) => d.saldo === 0) ? <EmptyChart t={t} /> : (
-            <div style={{ overflowX: "auto" }}>
+            <div style={{ overflowX: "auto", overflowY: "hidden" }}>
               <div style={{ minWidth: Math.max(360, dadosEvolucaoPatrimonio.length * 30) }}>
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={dadosEvolucaoPatrimonio}>
                     <CartesianGrid stroke={t.border} vertical={false} />
                     <XAxis dataKey="label" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={{ stroke: t.border }} tickLine={false} interval="preserveStartEnd" />
                     <YAxis tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }}
+                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }}
                       formatter={(v, name) => [fmtBRL(v), name === "aplicado" ? "Valor aplicado" : "Ganho de capital"]} />
                     <Legend wrapperStyle={{ fontSize: 12, color: t.text }} formatter={(v) => v === "aplicado" ? "Valor aplicado" : "Ganho de capital"} />
                     <Bar dataKey="aplicado" stackId="patrimonio" fill={t.primary} radius={[0, 0, 0, 0]} isAnimationActive={false} />
@@ -4356,7 +4868,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
                   >
                     {dadosPizzaClasses.map((d, i) => <Cell key={i} fill={d.color} />)}
                   </Pie>
-                  <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                  <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                 </PieChart>
               </ResponsiveContainer>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 4 }}>
@@ -4378,7 +4890,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
             <XAxis dataKey="mes" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={{ stroke: t.border }} tickLine={false} />
             <YAxis yAxisId="reais" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} />
             <YAxis yAxisId="pct" orientation="right" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} unit="%" />
-            <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v, name) => name === "Grau" ? `${v}%` : fmtBRL(v)} />
+            <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v, name) => name === "Grau" ? `${v}%` : fmtBRL(v)} />
             <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
             <Line yAxisId="reais" type="monotone" dataKey="rendimento" name="Rendimento" stroke={t.primary} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
             {metaRendaMensal > 0 && <Line yAxisId="pct" type="monotone" dataKey="grau" name="Grau" stroke={t.accent} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />}
@@ -4388,21 +4900,40 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
       </ChartCard>
 
       <div style={{ marginTop: 14 }} />
-      <ChartCard t={t} title="Composição da Carteira de Investimentos" subtitle="Renda Fixa x Renda Variável">
-        {totalCarteira === 0 ? <EmptyChart t={t} /> : (
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={dadosComposicao}>
-              <CartesianGrid stroke={t.border} vertical={false} />
-              <XAxis dataKey="nome" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={{ stroke: t.border }} tickLine={false} />
-              <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} unit="%" />
-              <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => `${v.toFixed(1)}%`} />
-              <Bar dataKey="pct" radius={[6, 6, 0, 0]} isAnimationActive={false}>
-                {dadosComposicao.map((d, i) => <Cell key={i} fill={d.cor} />)}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </ChartCard>
+      <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 14 }}>
+        <ChartCard t={t} title="Composição da Carteira de Investimentos" subtitle="Renda Fixa x Renda Variável">
+          {totalCarteira === 0 ? <EmptyChart t={t} /> : (
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={dadosComposicao}>
+                <CartesianGrid stroke={t.border} vertical={false} />
+                <XAxis dataKey="nome" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={{ stroke: t.border }} tickLine={false} />
+                <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} unit="%" />
+                <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => `${v.toFixed(1)}%`} />
+                <Bar dataKey="pct" radius={[6, 6, 0, 0]} isAnimationActive={false}>
+                  {dadosComposicao.map((d, i) => <Cell key={i} fill={d.cor} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Total investido ({MESES_LONGOS[mesSel]})</div>
+            <div className="mono" style={{ fontSize: 21, fontWeight: 700 }}>{fmtBRL(totalAtual)}</div>
+          </div>
+          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Variação da carteira no mês</div>
+            <div className="mono" style={{ fontSize: 21, fontWeight: 700, color: variacaoCarteira == null ? t.text : (variacaoCarteira >= 0 ? t.primary : t.danger) }}>
+              {variacaoCarteira == null ? "—" : `${variacaoCarteira >= 0 ? "+" : ""}${variacaoCarteira.toFixed(2)}%`}
+            </div>
+          </div>
+          <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Ativos cadastrados</div>
+            <div className="mono" style={{ fontSize: 21, fontWeight: 700 }}>{ativosAtivos.length}</div>
+          </div>
+        </div>
+      </div>
 
       <div style={{ marginTop: 14 }} />
       <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 14 }}>
@@ -4475,24 +5006,6 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
         </ModalShell>
       )}
 
-      <div style={{ marginTop: 14 }} />
-      <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
-          <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Total investido ({MESES_LONGOS[mesSel]})</div>
-          <div className="mono" style={{ fontSize: 21, fontWeight: 700 }}>{fmtBRL(totalAtual)}</div>
-        </div>
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
-          <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Variação da carteira no mês</div>
-          <div className="mono" style={{ fontSize: 21, fontWeight: 700, color: variacaoCarteira == null ? t.text : (variacaoCarteira >= 0 ? t.primary : t.danger) }}>
-            {variacaoCarteira == null ? "—" : `${variacaoCarteira >= 0 ? "+" : ""}${variacaoCarteira.toFixed(2)}%`}
-          </div>
-        </div>
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
-          <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Ativos cadastrados</div>
-          <div className="mono" style={{ fontSize: 21, fontWeight: 700 }}>{ativosAtivos.length}</div>
-        </div>
-      </div>
-
       <div style={{ marginBottom: 12 }}>
         <select value={filtroClasseLista} onChange={(e) => setFiltroClasseLista(e.target.value)} style={{ ...selectStyle(t), border: `1px solid ${t.border}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, width: "100%", maxWidth: 280 }}>
           <option value="">Todas as classes</option>
@@ -4515,15 +5028,15 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
                   <div style={{ width: 36, height: 36, borderRadius: 9, background: `${g.cor}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <Icone size={16} color={g.cor} />
                   </div>
-                  <span style={{ fontWeight: 700, fontSize: 14, flex: "0 0 auto", minWidth: 100 }}>{g.classe}</span>
+                  <span style={{ fontWeight: 700, fontSize: 14, flex: "0 0 auto", minWidth: 100, color: t.text }}>{g.classe}</span>
                   <div style={{ display: "flex", flex: 1, justifyContent: "flex-end", gap: 22, flexWrap: "wrap" }}>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 10.5, color: t.textMuted }}>Ativos</div>
-                      <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{g.qtd}</div>
+                      <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: t.text }}>{g.qtd}</div>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 10.5, color: t.textMuted }}>Valor total</div>
-                      <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{fmtBRL(g.valorTotal)}</div>
+                      <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: t.text }}>{fmtBRL(g.valorTotal)}</div>
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 10.5, color: t.textMuted }}>% carteira</div>
@@ -4543,11 +5056,11 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
                             {ativo.imagem ? <img src={ativo.imagem} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <Icone size={14} color={t.textMuted} />}
                           </div>
                           <div style={{ minWidth: 0, flex: 1 }}>
-                            <div style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ativo.nome}</div>
+                            <div style={{ fontWeight: 600, fontSize: 12.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: t.text }}>{ativo.nome}</div>
                             <div style={{ fontSize: 10.5, color: t.textMuted }}>{ativo.instituicaoFinanceira || "—"}</div>
                           </div>
                           <div style={{ textAlign: "right" }}>
-                            <div className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtBRL(saldo)}</div>
+                            <div className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: t.text }}>{fmtBRL(saldo)}</div>
                             <div style={{ fontSize: 10, fontWeight: 600, color: variacao == null ? t.textMuted : (variacao >= 0 ? t.primary : t.danger) }}>
                               {variacao == null ? "—" : `${variacao >= 0 ? "+" : ""}${variacao.toFixed(2)}%`}
                             </div>
@@ -4586,7 +5099,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
                   >
                     {dadosInstituicao.map((d, i) => <Cell key={i} fill={d.color} />)}
                   </Pie>
-                  <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                  <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                 </PieChart>
               </ResponsiveContainer>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "center", marginTop: 4 }}>
@@ -4600,35 +5113,48 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
           )}
         </ChartCard>
 
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
+        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, display: "flex", flexDirection: "column" }}>
           <SectionTitle t={t} title="Investimentos por Emissor" icon={TrendingUp} />
-          {ativos.length === 0 ? <EmptyState t={t} text="Nenhum ativo cadastrado ainda." /> : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: t.primary, color: "#fff" }}>
-                    <th style={{ padding: "8px 10px", textAlign: "left", borderRadius: "8px 0 0 8px", fontWeight: 600 }}>Emissor</th>
-                    <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600 }}>Total Investido</th>
-                    <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600 }}>Total Resgatado</th>
-                    <th style={{ padding: "8px 10px", textAlign: "right", borderRadius: "0 8px 8px 0", fontWeight: 600 }}>Últ. Atualização</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ativos.map((a) => {
-                    const ultima = ultimaAtualizacaoAtivo(a);
-                    return (
-                      <tr key={a.id}>
-                        <td style={{ ...tdStyle(t), padding: "8px 10px" }}>{a.nome}</td>
-                        <td className="mono" style={{ ...tdStyle(t), padding: "8px 10px", textAlign: "right" }}>{fmtBRL(totalAportadoAtivo(a))}</td>
-                        <td className="mono" style={{ ...tdStyle(t), padding: "8px 10px", textAlign: "right" }}>{fmtBRL(totalResgatadoAtivo(a))}</td>
-                        <td className="mono" style={{ ...tdStyle(t), padding: "8px 10px", textAlign: "right", color: t.textMuted }}>{ultima ? dataBR(ultima) : "—"}</td>
+          {ativos.length === 0 ? <EmptyState t={t} text="Nenhum ativo cadastrado ainda." /> : (() => {
+            const LIMITE_EMISSORES = 6;
+            const emissoresOrdenados = ativos.slice().sort((a, b) => totalAportadoAtivo(b) - totalAportadoAtivo(a));
+            const emissoresExibidos = verTodosEmissores ? emissoresOrdenados : emissoresOrdenados.slice(0, LIMITE_EMISSORES);
+            return (
+              <>
+                <div style={{ overflowX: "auto", overflowY: verTodosEmissores ? "auto" : "visible", maxHeight: verTodosEmissores ? 320 : "none" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: t.primary, color: "#fff" }}>
+                        <th style={{ padding: "8px 10px", textAlign: "left", borderRadius: "8px 0 0 8px", fontWeight: 600 }}>Emissor</th>
+                        <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600 }}>Total Investido</th>
+                        <th style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600 }}>Total Resgatado</th>
+                        <th style={{ padding: "8px 10px", textAlign: "right", borderRadius: "0 8px 8px 0", fontWeight: 600 }}>Últ. Atualização</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                    </thead>
+                    <tbody>
+                      {emissoresExibidos.map((a) => {
+                        const ultima = ultimaAtualizacaoAtivo(a);
+                        return (
+                          <tr key={a.id}>
+                            <td style={{ ...tdStyle(t), padding: "8px 10px" }}>{a.nome}</td>
+                            <td className="mono" style={{ ...tdStyle(t), padding: "8px 10px", textAlign: "right" }}>{fmtBRL(totalAportadoAtivo(a))}</td>
+                            <td className="mono" style={{ ...tdStyle(t), padding: "8px 10px", textAlign: "right" }}>{fmtBRL(totalResgatadoAtivo(a))}</td>
+                            <td className="mono" style={{ ...tdStyle(t), padding: "8px 10px", textAlign: "right", color: t.textMuted }}>{ultima ? dataBR(ultima) : "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {emissoresOrdenados.length > LIMITE_EMISSORES && (
+                  <button onClick={() => setVerTodosEmissores(!verTodosEmissores)} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600, marginTop: 10, cursor: "pointer", padding: 0 }}>
+                    {verTodosEmissores ? "Exibir menos" : `Exibir mais (${emissoresOrdenados.length - LIMITE_EMISSORES})`}
+                    <ChevronRight size={13} style={{ transform: verTodosEmissores ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform .15s" }} />
+                  </button>
+                )}
+              </>
+            );
+          })()}
           <p style={{ fontSize: 10.5, color: t.textMuted, marginTop: 10 }}>"Total Investido/Resgatado" reflete os aportes e resgates registrados na tela de cada ativo — sem isso, fica em R$ 0,00.</p>
         </div>
       </div>
@@ -4778,7 +5304,7 @@ function AtivoDetalhe({ t, ativo, permiteDeletar, onVoltar, onRegistrarSaldo, on
                 <CartesianGrid stroke={t.border} vertical={false} />
                 <XAxis dataKey="data" tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={{ stroke: t.border }} tickLine={false} />
                 <YAxis tick={{ fill: t.textMuted, fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} formatter={(v) => fmtBRL(v)} />
+                <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
                 <Line type="monotone" dataKey="saldo" stroke={t.primary} strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
@@ -4828,12 +5354,16 @@ function ModalAtivo({ t, dado, ativosExistentes, onClose, onSave }) {
   const [nome, setNome] = useState(dado?.nome || "");
   const [tipo, setTipo] = useState(dado?.tipo || TIPOS_ATIVO[0]);
   const [instituicaoFinanceira, setInstituicaoFinanceira] = useState(dado?.instituicaoFinanceira || "");
+  const [ticker, setTicker] = useState(dado?.ticker || "");
+  const [coinGeckoId, setCoinGeckoId] = useState(dado?.coinGeckoId || "");
   const [imagem, setImagem] = useState(dado?.imagem || null);
   const [erroImg, setErroImg] = useState("");
 
   // Sugestões baseadas em ativos já cadastrados antes, para preencher mais rápido (evita digitar/errar o mesmo nome de novo)
   const nomesSugeridos = (ativosExistentes || []).map((a) => a.nome);
   const instituicoesSugeridas = (ativosExistentes || []).map((a) => a.instituicaoFinanceira);
+  const temCotacaoBrapi = CLASSES_COM_TICKER_BRAPI.includes(tipo);
+  const temCotacaoCripto = CLASSES_COM_ID_COINGECKO.includes(tipo);
 
   const escolherImagem = async (e) => {
     const file = e.target.files?.[0];
@@ -4848,7 +5378,11 @@ function ModalAtivo({ t, dado, ativosExistentes, onClose, onSave }) {
     }
   };
 
-  const salvar = () => onSave({ id: dado?.id, nome: nome.trim(), tipo, instituicaoFinanceira: instituicaoFinanceira.trim(), imagem });
+  const salvar = () => onSave({
+    id: dado?.id, nome: nome.trim(), tipo, instituicaoFinanceira: instituicaoFinanceira.trim(), imagem,
+    ticker: temCotacaoBrapi ? ticker.trim().toUpperCase() : "",
+    coinGeckoId: temCotacaoCripto ? coinGeckoId.trim().toLowerCase() : ""
+  });
 
   return (
     <ModalShell t={t} title={dado ? "Editar Ativo" : "Novo Ativo"} onClose={onClose}>
@@ -4882,6 +5416,23 @@ function ModalAtivo({ t, dado, ativosExistentes, onClose, onSave }) {
           ))}
         </div>
       </div>
+
+      {temCotacaoBrapi && (
+        <Field label="Ticker (código na bolsa)" t={t} icon={<RefreshCw size={14} />}>
+          <input value={ticker} onChange={(e) => setTicker(e.target.value.toUpperCase())} style={{ ...inputStyle(t), textTransform: "uppercase" }} placeholder="EX: PETR4, MXRF11…" />
+        </Field>
+      )}
+      {temCotacaoBrapi && (
+        <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 12px" }}>Opcional — preenchendo, esse ativo entra na "Sugestão de Aportes" com cotação do dia atualizada automaticamente.</p>
+      )}
+      {temCotacaoCripto && (
+        <Field label="ID na CoinGecko" t={t} icon={<RefreshCw size={14} />}>
+          <input value={coinGeckoId} onChange={(e) => setCoinGeckoId(e.target.value.toLowerCase())} style={inputStyle(t)} placeholder="EX: bitcoin, ethereum, solana…" />
+        </Field>
+      )}
+      {temCotacaoCripto && (
+        <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 12px" }}>Opcional — é o identificador usado pela CoinGecko (não é a sigla). Veja em coingecko.com na página da moeda.</p>
+      )}
 
       <button disabled={!nome.trim()} onClick={salvar} style={{ ...btnPrimary(t), width: "100%", justifyContent: "center", marginTop: 8, opacity: nome.trim() ? 1 : 0.6 }}>
         <Check size={15} /> Salvar
@@ -4986,6 +5537,7 @@ const CartoesView = React.memo(function CartoesView({ t, db, onChange }) {
             const disponivel = limite > 0 ? Math.max(0, limite - fatura) : null;
             const fechamento = proximaDataDoMes(c.diaFechamento);
             const vencimento = proximaDataDoMes(c.diaVencimento);
+            const proximasFaturas = totalParcelasFuturasCartao(c, db.transacoes);
             return (
               <div key={c.id} style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 16, boxShadow: t.shadow, opacity: c.status === "inativo" ? 0.55 : 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -5009,6 +5561,11 @@ const CartoesView = React.memo(function CartoesView({ t, db, onChange }) {
                   </>
                 )}
                 {vencimento && <div style={{ fontSize: 11, color: t.textMuted }}>vencimento {dataBR(vencimento)}</div>}
+                {proximasFaturas > 0 && (
+                  <div style={{ fontSize: 11, color: t.accent, marginTop: 6, paddingTop: 6, borderTop: `1px dashed ${t.border}` }}>
+                    + {fmtBRL(proximasFaturas)} já lançado para faturas futuras
+                  </div>
+                )}
               </div>
             );
           })}
@@ -5767,6 +6324,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: FONT_STACK, background: t.bg, color: t.text, height: "100vh", display: "flex", position: "relative", transition: "background .2s,color .2s", overflow: "hidden" }}>
       <style>{`
+        html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
         * { box-sizing: border-box; }
         ::selection { background: ${t.primary}33; }
         .mono { font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace; font-variant-numeric: tabular-nums; }
@@ -5775,6 +6333,8 @@ export default function App() {
         input { font-family: inherit; }
         .scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
         .scrollbar::-webkit-scrollbar-thumb { background: ${t.border}; border-radius: 8px; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .spin { animation: spin 0.8s linear infinite; }
         @media (max-width: 820px) {
           .sidebar-desktop { display: none !important; }
         }
@@ -5849,7 +6409,7 @@ export default function App() {
           onMenu={() => setMobileOpen(true)}
           routeTitle={ROUTE_TITLES[route]}
         />
-        <main className="scrollbar main-content" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "24px", maxWidth: 1360, width: "100%", margin: "0 auto" }}>
+        <main className="scrollbar main-content" style={{ flex: 1, minHeight: 0, overflowY: "auto", scrollbarGutter: "stable both-edges", padding: "24px", maxWidth: 1360, width: "100%", margin: "0 auto" }}>
           {route === "dashboard" && (
             <Dashboard
               t={t} db={db}
