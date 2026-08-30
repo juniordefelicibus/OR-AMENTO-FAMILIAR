@@ -6,7 +6,7 @@ import {
   Wallet, Receipt, BarChart3, Lock, Mail, ArrowRight, X, Check, Menu, ShieldCheck,
   LineChart as LineChartIcon, CreditCard, Repeat, CheckCircle2, Ban, ArrowUpCircle,
   ArrowDownCircle, CalendarClock, SlidersHorizontal, ArrowLeftRight, StickyNote, PartyPopper, AlertTriangle, ImagePlus, Bell,
-  FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown
+  FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, SearchX
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -779,10 +779,13 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
   const [anoSel, setAnoSel] = useState(hoje.getFullYear());
   const [abaLancamentos, setAbaLancamentos] = useState("Despesa"); // Despesa | Receita
   const [abaPendencias, setAbaPendencias] = useState("Despesa");
+  const [verTodasPendencias, setVerTodasPendencias] = useState(false);
   const [ocultarValores, setOcultarValores] = useState(false);
   const [novaAnotacao, setNovaAnotacao] = useState("");
   const [filtroDonut, setFiltroDonut] = useState(""); // "" = todas as categorias
   const [modalTransferencia, setModalTransferencia] = useState(false);
+
+  useEffect(() => { setVerTodasPendencias(false); }, [abaPendencias, mesSel, anoSel]);
 
   const somaMes = (tipo, ano, mes) => ativas
     .filter((tx) => tx.tipo === tipo && tx.data)
@@ -916,15 +919,17 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     .filter((tx) => tx.tipo === abaPendencias && tx.status === "pendente")
     .sort((a, b) => (a.data || "").localeCompare(b.data || ""));
 
-  // Lembretes da Semana — sempre a semana corrente (seg a dom) com base na data real de hoje,
-  // independente do mês/ano selecionado acima nos outros cards do painel.
-  const hojeStrLembrete = hojeISO();
+  // Lembretes da Semana — acompanha o mês/ano selecionado acima nos outros cards do painel: no mês vigente
+  // usa a semana real (seg a dom) com base em hoje; em qualquer outro mês/ano navegado, usa a semana (seg a dom)
+  // que contém o dia 1º daquele mês como referência.
+  const refSemana = isMesVigente ? hoje : new Date(anoSel, mesSel, 1);
+  const toISOSemana = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const hojeStrLembrete = toISOSemana(refSemana);
   const { inicioSemana, fimSemana } = (() => {
-    const diaSemana = hoje.getDay(); // 0=Dom .. 6=Sáb
-    const seg = new Date(hoje); seg.setDate(hoje.getDate() - ((diaSemana + 6) % 7));
+    const diaSemana = refSemana.getDay(); // 0=Dom .. 6=Sáb
+    const seg = new Date(refSemana); seg.setDate(refSemana.getDate() - ((diaSemana + 6) % 7));
     const dom = new Date(seg); dom.setDate(seg.getDate() + 6);
-    const toISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return { inicioSemana: toISO(seg), fimSemana: toISO(dom) };
+    return { inicioSemana: toISOSemana(seg), fimSemana: toISOSemana(dom) };
   })();
   const pendenciasSemana = ativas
     .filter((tx) => tx.status === "pendente" && tx.data && tx.data >= inicioSemana && tx.data <= fimSemana)
@@ -996,11 +1001,11 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: 4, boxShadow: t.shadow }}>
-          <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13 }}>
+          <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13, minWidth: 118, flex: "none" }}>
             {MESES_LONGOS.map((m, i) => <option key={m} value={i}>{m}</option>)}
           </select>
           <div style={{ width: 1, height: 18, background: t.border }} />
-          <select value={anoSel} onChange={(e) => setAnoSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13 }}>
+          <select value={anoSel} onChange={(e) => setAnoSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13, minWidth: 66, flex: "none" }}>
             {Array.from({ length: 6 }, (_, i) => hoje.getFullYear() - 3 + i).map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
         </div>
@@ -1092,19 +1097,31 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
                 <PartyPopper size={28} color={t.primary} />
                 <div style={{ fontSize: 12.5, color: t.textMuted }}>Você não possui nenhuma pendência em {MESES_LONGOS[mesSel]}!</div>
               </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                {pendencias.map((tx) => (
-                  <div key={tx.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 0", borderBottom: `1px solid ${t.border}` }}>
-                    <div style={{ fontSize: 12.5 }}>{tx.descricao}</div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span className="mono" style={{ fontSize: 10.5, color: t.textMuted }}>{dataBR(tx.data)}</span>
-                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{ocultarValores ? "••••" : fmtBRL(tx.valor)}</span>
-                    </div>
+            ) : (() => {
+              const LIMITE_PENDENCIAS = 6;
+              const pendenciasExibidas = verTodasPendencias ? pendencias : pendencias.slice(0, LIMITE_PENDENCIAS);
+              return (
+                <>
+                  <div style={{ display: "flex", flexDirection: "column", overflowY: verTodasPendencias ? "auto" : "visible", maxHeight: verTodasPendencias ? 320 : "none" }}>
+                    {pendenciasExibidas.map((tx) => (
+                      <div key={tx.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 0", borderBottom: `1px solid ${t.border}` }}>
+                        <div style={{ fontSize: 12.5 }}>{tx.descricao}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span className="mono" style={{ fontSize: 10.5, color: t.textMuted }}>{dataBR(tx.data)}</span>
+                          <span className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{ocultarValores ? "••••" : fmtBRL(tx.valor)}</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                  {pendencias.length > LIMITE_PENDENCIAS && (
+                    <button onClick={() => setVerTodasPendencias(!verTodasPendencias)} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12, fontWeight: 600, marginTop: 10, cursor: "pointer", padding: 0 }}>
+                      {verTodasPendencias ? "Exibir menos" : `Exibir mais (${pendencias.length - LIMITE_PENDENCIAS})`}
+                      <ChevronRight size={13} style={{ transform: verTodasPendencias ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform .15s" }} />
+                    </button>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
 
@@ -1817,10 +1834,27 @@ function ultimoDiaMesAtualISO() {
   const u = new Date(h.getFullYear(), h.getMonth() + 1, 0);
   return `${u.getFullYear()}-${String(u.getMonth() + 1).padStart(2, "0")}-${String(u.getDate()).padStart(2, "0")}`;
 }
+// Último/primeiro dia do mês de uma data ISO ("YYYY-MM-DD") — usados para manter os filtros de período "de/até"
+// sempre com um intervalo válido, mesmo quando o usuário troca só o mês/ano de uma das pontas do período
+// (ex.: "até" ficou em 31 mas o mês novo não tem dia 31, ou o "de" avançou para depois do "até").
+function fimDoMesISO(anoMesDiaISO) {
+  const [ano, mes] = anoMesDiaISO.split("-").map(Number);
+  const ultimo = new Date(ano, mes, 0).getDate();
+  return `${ano}-${String(mes).padStart(2, "0")}-${String(ultimo).padStart(2, "0")}`;
+}
+function inicioDoMesISO(anoMesDiaISO) {
+  const [ano, mes] = anoMesDiaISO.split("-").map(Number);
+  return `${ano}-${String(mes).padStart(2, "0")}-01`;
+}
 
 function ModalExtrato({ t, db, conta, onClose }) {
   const [dataIni, setDataIni] = useState(primeiroDiaMesAtualISO());
   const [dataFim, setDataFim] = useState(ultimoDiaMesAtualISO());
+  // Mantém o período sempre válido: se o "de" avançar para depois do "até" (ex.: trocou o mês do início
+  // e o fim ficou para trás), empurra o "até" para o fim do mês do "de" — e vice-versa — em vez de deixar
+  // o intervalo invertido/vazio silenciosamente.
+  useEffect(() => { if (dataIni && dataFim && dataIni > dataFim) setDataFim(fimDoMesISO(dataIni)); }, [dataIni]);
+  useEffect(() => { if (dataIni && dataFim && dataFim < dataIni) setDataIni(inicioDoMesISO(dataFim)); }, [dataFim]);
   if (!conta) return null;
   const movimentosMap = new Map();
   (db.transacoes || []).forEach((tx) => {
@@ -2108,6 +2142,11 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
   const [filtroCartao, setFiltroCartao] = useState(""); // "" = todos os cartões
   const [dataIni, setDataIni] = useState(primeiroDiaMesAtualISO());
   const [dataFim, setDataFim] = useState(ultimoDiaMesAtualISO());
+  // Mantém o período sempre válido: se o "de" avançar para depois do "até" (ex.: trocou o mês do início
+  // e o fim ficou para trás), empurra o "até" para o fim do mês do "de" — e vice-versa — em vez de deixar
+  // o intervalo invertido/vazio silenciosamente.
+  useEffect(() => { if (dataIni && dataFim && dataIni > dataFim) setDataFim(fimDoMesISO(dataIni)); }, [dataIni]);
+  useEffect(() => { if (dataIni && dataFim && dataFim < dataIni) setDataIni(inicioDoMesISO(dataFim)); }, [dataFim]);
   const [busca, setBusca] = useState("");
   const [sortCol, setSortCol] = useState("data"); // data | descricao | origem | cartao | valor | status
   const [sortDir, setSortDir] = useState("desc"); // asc | desc
@@ -2415,9 +2454,7 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
 
       {totalContasCartoes === 0 && <EmptyState t={t} text="Cadastre pelo menos uma conta em “Contas” antes de lançar transações — toda transação precisa de uma origem." />}
 
-      {lista.length === 0 && totalContasCartoes > 0 ? (
-        <EmptyState t={t} text="Nenhuma transação lançada ainda." />
-      ) : lista.length > 0 && (
+      {totalContasCartoes > 0 && (
         <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -2465,6 +2502,17 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                 </tr>
               </thead>
               <tbody>
+                {lista.length === 0 && (
+                  <tr>
+                    <td colSpan={9} style={{ padding: "32px 16px" }}>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", gap: 6, color: t.textMuted }}>
+                        <SearchX size={22} color={t.textMuted} />
+                        <span style={{ fontSize: 13 }}>Nenhuma transação encontrada com os filtros atuais.</span>
+                        <span style={{ fontSize: 11.5 }}>Ajuste o período, categoria, cartão ou busca acima para ver outros resultados.</span>
+                      </div>
+                    </td>
+                  </tr>
+                )}
                 {lista.slice(0, qtdVisivel).map((tx) => (
                   <tr key={tx.id} style={{ opacity: tx.status === "cancelado" ? 0.5 : 1 }}>
                     <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px" }}>{dataBR(tx.data)}</td>
@@ -2988,11 +3036,11 @@ const PlanejamentoView = React.memo(function PlanejamentoView({ t, db, onChange 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: 4, boxShadow: t.shadow, width: "fit-content", marginBottom: 16 }}>
-        <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13 }}>
+        <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13, minWidth: 118, flex: "none" }}>
           {MESES_LONGOS.map((m, i) => <option key={m} value={i}>{m}</option>)}
         </select>
         <div style={{ width: 1, height: 18, background: t.border }} />
-        <select value={anoSel} onChange={(e) => setAnoSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13 }}>
+        <select value={anoSel} onChange={(e) => setAnoSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13, minWidth: 66, flex: "none" }}>
           {Array.from({ length: 6 }, (_, i) => hoje.getFullYear() - 3 + i).map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
       </div>
@@ -3110,6 +3158,9 @@ const MetasView = React.memo(function MetasView({ t, db, onChange }) {
   const [anoResumo, setAnoResumo] = useState(hoje.getFullYear());
   const [dataIniResumo, setDataIniResumo] = useState("");
   const [dataFimResumo, setDataFimResumo] = useState("");
+  // Mesma proteção contra período invertido usada nos demais filtros "de/até" do app.
+  useEffect(() => { if (dataIniResumo && dataFimResumo && dataIniResumo > dataFimResumo) setDataFimResumo(fimDoMesISO(dataIniResumo)); }, [dataIniResumo]);
+  useEffect(() => { if (dataIniResumo && dataFimResumo && dataFimResumo < dataIniResumo) setDataIniResumo(inicioDoMesISO(dataFimResumo)); }, [dataFimResumo]);
 
   const metas = db.metas || [];
   const metaAberta = metas.find((m) => m.id === metaAbertaId);
@@ -3226,10 +3277,10 @@ const MetasView = React.memo(function MetasView({ t, db, onChange }) {
 
           {modoPeriodo === "mes" ? (
             <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-              <select value={mesResumo} onChange={(e) => setMesResumo(Number(e.target.value))} style={{ ...selectStyle(t), border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", fontSize: 12.5 }}>
+              <select value={mesResumo} onChange={(e) => setMesResumo(Number(e.target.value))} style={{ ...selectStyle(t), border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", fontSize: 12.5, minWidth: 116, flex: "none" }}>
                 {MESES_LONGOS.map((m, i) => <option key={m} value={i}>{m}</option>)}
               </select>
-              <select value={anoResumo} onChange={(e) => setAnoResumo(Number(e.target.value))} style={{ ...selectStyle(t), border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", fontSize: 12.5 }}>
+              <select value={anoResumo} onChange={(e) => setAnoResumo(Number(e.target.value))} style={{ ...selectStyle(t), border: `1px solid ${t.border}`, borderRadius: 8, padding: "6px 8px", fontSize: 12.5, minWidth: 64, flex: "none" }}>
                 {Array.from({ length: 6 }, (_, i) => hoje.getFullYear() - 3 + i).map((a) => <option key={a} value={a}>{a}</option>)}
               </select>
             </div>
@@ -3525,6 +3576,11 @@ const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
   const [ativoIdRelatorio, setAtivoIdRelatorio] = useState(""); // "" = todos os ativos
   const [dataIni, setDataIni] = useState(primeiroDiaMesAtualISO());
   const [dataFim, setDataFim] = useState(ultimoDiaMesAtualISO());
+  // Mantém o período sempre válido: se o "de" avançar para depois do "até" (ex.: trocou o mês do início
+  // e o fim ficou para trás), empurra o "até" para o fim do mês do "de" — e vice-versa — em vez de deixar
+  // o intervalo invertido/vazio silenciosamente.
+  useEffect(() => { if (dataIni && dataFim && dataIni > dataFim) setDataFim(fimDoMesISO(dataIni)); }, [dataIni]);
+  useEffect(() => { if (dataIni && dataFim && dataFim < dataIni) setDataIni(inicioDoMesISO(dataFim)); }, [dataFim]);
 
   const cartoesAtivos = (db.cartoes || []).filter((c) => c.status === "ativo");
   const contasAtivas = db.contas.filter((c) => c.status === "ativo");
@@ -3947,6 +4003,11 @@ function origemChave(tx) {
 const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, db, onVerTransacoes, onVerRelatorios }) {
   const [dataIni, setDataIni] = useState(primeiroDiaMesAtualISO());
   const [dataFim, setDataFim] = useState(ultimoDiaMesAtualISO());
+  // Mantém o período sempre válido: se o "de" avançar para depois do "até" (ex.: trocou o mês do início
+  // e o fim ficou para trás), empurra o "até" para o fim do mês do "de" — e vice-versa — em vez de deixar
+  // o intervalo invertido/vazio silenciosamente.
+  useEffect(() => { if (dataIni && dataFim && dataIni > dataFim) setDataFim(fimDoMesISO(dataIni)); }, [dataIni]);
+  useEffect(() => { if (dataIni && dataFim && dataFim < dataIni) setDataIni(inicioDoMesISO(dataFim)); }, [dataFim]);
   const [filtroTipo, setFiltroTipo] = useState(""); // "" | Receita | Despesa
   const [filtroOrigem, setFiltroOrigem] = useState(""); // "" | "conta:id" | "cartao:id"
   const [filtroCategoria, setFiltroCategoria] = useState("");
@@ -4672,11 +4733,11 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
     <div>
       <div className="no-print" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: 4, boxShadow: t.shadow }}>
-          <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13 }}>
+          <select value={mesSel} onChange={(e) => setMesSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13, minWidth: 118, flex: "none" }}>
             {MESES_LONGOS.map((m, i) => <option key={m} value={i}>{m}</option>)}
           </select>
           <div style={{ width: 1, height: 18, background: t.border }} />
-          <select value={anoSel} onChange={(e) => setAnoSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13 }}>
+          <select value={anoSel} onChange={(e) => setAnoSel(Number(e.target.value))} style={{ ...selectStyle(t), border: "none", padding: "6px 8px", fontWeight: 600, fontSize: 13, minWidth: 66, flex: "none" }}>
             {Array.from({ length: 6 }, (_, i) => hoje.getFullYear() - 3 + i).map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
         </div>
