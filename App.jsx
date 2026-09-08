@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, AreaChart, Area, RadialBarChart, RadialBar, ComposedChart
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, AreaChart, Area, RadialBarChart, RadialBar, ComposedChart, LabelList
 } from "recharts";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
@@ -23,6 +23,14 @@ import { createClient } from "@supabase/supabase-js";
    ============================================================ */
 const FONT_STACK = "system-ui, -apple-system, 'Segoe UI', sans-serif";
 const FONT_MONO = "ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace";
+
+/* Meta ideal de alocação da receita por categoria (regra de orçamento pessoal do usuário: 50% Fixo /
+   30% Variável / 10% Lazer / 10% Investimentos) — usada só como referência visual no Analista Financeiro,
+   comparando contra as categorias reais cadastradas em "Categorias" (nome comparado sem acento/maiúsculas,
+   pra casar "Variável", "VARIAVEL", "variável" etc.). Categorias sem nome correspondente aqui simplesmente
+   não mostram a barra/percentual "ideal". */
+const METAS_IDEAIS_CATEGORIA = { FIXO: 50, VARIAVEL: 30, LAZER: 10, INVESTIMENTOS: 10 };
+const normalizarNomeCategoria = (s) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().trim();
 
 const THEME = {
   light: {
@@ -380,6 +388,56 @@ const SUPABASE_CONFIGURADO = !!SUPABASE_URL && !!SUPABASE_ANON_KEY;
 const supabase = SUPABASE_CONFIGURADO ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const TABELA_DADOS = "financas_dados";
+const TABELA_PUSH = "push_subscriptions";
+
+/* ============================================================
+   NOTIFICAÇÕES PUSH — lembretes de vencimento fora do app
+   Chave pública VAPID (pode ficar exposta no código, é feita pra isso — a privada
+   fica só no servidor/Netlify, nunca aqui). Sem ela configurada, a seção de
+   notificações em Configurações mostra "indisponível" em vez de quebrar.
+   ============================================================ */
+const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || "";
+
+function urlBase64ParaUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
+
+/* Busca a inscrição de push já ativa neste navegador (se houver) — usada tanto pra
+   mostrar o estado correto do botão em Configurações quanto na hora de desativar. */
+async function inscricaoPushAtual() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const registro = await navigator.serviceWorker.ready;
+  return registro.pushManager.getSubscription();
+}
+
+async function ativarNotificacoesPush(userId) {
+  if (!VAPID_PUBLIC_KEY) throw new Error("Notificações não configuradas neste app ainda (falta VITE_VAPID_PUBLIC_KEY).");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) throw new Error("Este navegador não suporta notificações push.");
+  const permissao = await Notification.requestPermission();
+  if (permissao !== "granted") throw new Error("Permissão de notificação negada.");
+  const registro = await navigator.serviceWorker.ready;
+  let inscricao = await registro.pushManager.getSubscription();
+  if (!inscricao) {
+    inscricao = await registro.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ParaUint8Array(VAPID_PUBLIC_KEY) });
+  }
+  const json = inscricao.toJSON();
+  const { error } = await supabase.from(TABELA_PUSH).upsert({
+    user_id: userId, endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth
+  }, { onConflict: "endpoint" });
+  if (error) throw error;
+  return inscricao;
+}
+
+async function desativarNotificacoesPush() {
+  const inscricao = await inscricaoPushAtual();
+  if (!inscricao) return;
+  const endpoint = inscricao.endpoint;
+  await inscricao.unsubscribe().catch(() => {});
+  if (supabase) await supabase.from(TABELA_PUSH).delete().eq("endpoint", endpoint);
+}
 
 /* Busca os dados desta pessoa na nuvem. Se for o primeiro acesso (linha ainda não existe),
    cria a semente inicial (seedDB) já vinculada a este usuário e ao e-mail confirmado pelo Supabase Auth. */
@@ -846,6 +904,24 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     .sort((a, b) => b.realizado - a.realizado)
     .slice(0, 8);
 
+  // Alerta de orçamento em destaque: sempre mostra as 4 classes da meta de alocação (Fixo/Variável/
+  // Lazer/Investimentos — mesma meta 50/30/10/10 usada no gráfico do Analista Financeiro), não só quando
+  // alguma estoura. Cada uma com seu status (dentro do previsto / atenção / estourado / não cadastrada) —
+  // diferente do card "Realizado vs Planejado" abaixo, que só lista quem já tem valor lançado ou planejado.
+  const ORDEM_CLASSES_ALERTA = ["FIXO", "VARIAVEL", "LAZER", "INVESTIMENTOS"];
+  const LABEL_CLASSES_ALERTA = { FIXO: "FIXO", VARIAVEL: "VARIÁVEL", LAZER: "LAZER", INVESTIMENTOS: "INVESTIMENTOS" };
+  const alertasOrcamento = ORDEM_CLASSES_ALERTA.map((chave) => {
+    const cat = categoriasDespesa.find((c) => normalizarNomeCategoria(c.nome) === chave);
+    if (!cat) return { classe: chave, categoria: LABEL_CLASSES_ALERTA[chave], cor: null, planejado: 0, realizado: 0, pct: 0, status: "nao-cadastrada" };
+    const planejado = planejadoCategoria(cat.id);
+    const realizado = realizadoCategoriaMes(cat.id);
+    const pct = planejado > 0 ? Math.round((realizado / planejado) * 100) : 0;
+    const status = planejado === 0 ? "sem-orcamento" : pct >= 100 ? "estourado" : pct >= 80 ? "atencao" : "ok";
+    return { classe: chave, categoria: cat.nome, cor: cat.cor, planejado, realizado, pct, status };
+  });
+  const severidadeGeralOrcamento = alertasOrcamento.some((a) => a.status === "estourado") ? "estourado"
+    : alertasOrcamento.some((a) => a.status === "atencao") ? "atencao" : "ok";
+
   const areaAnual = Array.from({ length: 12 }, (_, i) => ({
     mes: MESES[i],
     receita: somaMes("Receita", anoSel, i),
@@ -1042,6 +1118,40 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
           </div>
         ))}
       </div>
+
+      {(() => {
+        const corSeveridade = severidadeGeralOrcamento === "estourado" ? t.danger : severidadeGeralOrcamento === "atencao" ? t.accent : t.primary;
+        const tituloSeveridade = severidadeGeralOrcamento === "estourado" ? "Orçamento estourado" : severidadeGeralOrcamento === "atencao" ? "Orçamento perto do limite" : "Orçamento sob controle";
+        const CORES_STATUS = { estourado: t.danger, atencao: t.accent, ok: t.primary, "sem-orcamento": t.textMuted, "nao-cadastrada": t.textMuted };
+        const LABEL_STATUS = { estourado: "estourado", atencao: "atenção", ok: "dentro do previsto", "sem-orcamento": "sem orçamento definido", "nao-cadastrada": "categoria não cadastrada" };
+        return (
+          <div style={{ background: `${corSeveridade}0D`, border: `1.5px solid ${corSeveridade}50`, borderRadius: 14, padding: "14px 16px", marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <AlertTriangle size={16} color={corSeveridade} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: corSeveridade }}>{tituloSeveridade} em {MESES_LONGOS[mesSel]}</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {alertasOrcamento.map((a) => {
+                const cor = CORES_STATUS[a.status];
+                const titulo = a.status === "nao-cadastrada" ? "Nenhuma categoria de despesa com esse nome cadastrada ainda"
+                  : a.status === "sem-orcamento" ? "Defina um valor planejado em “Planejamento” para acompanhar aqui"
+                  : `${fmtBRL(a.realizado)} de ${fmtBRL(a.planejado)} planejados`;
+                return (
+                  <div key={a.classe} title={titulo}
+                    style={{ display: "flex", alignItems: "center", gap: 7, background: t.surface, border: `1px solid ${cor}60`, borderRadius: 9, padding: "6px 12px", opacity: (a.status === "nao-cadastrada" || a.status === "sem-orcamento") ? 0.75 : 1 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 3, background: a.cor || t.textMuted, flexShrink: 0 }} />
+                    <span style={{ fontSize: 12.5, fontWeight: 600 }}>{a.categoria}</span>
+                    {(a.status === "estourado" || a.status === "atencao" || a.status === "ok") && (
+                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 700, color: cor }}>{a.pct}%</span>
+                    )}
+                    <span style={{ fontSize: 10, fontWeight: 700, color: cor, textTransform: "uppercase", letterSpacing: 0.3 }}>{LABEL_STATUS[a.status]}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14, marginBottom: 14, alignItems: "start" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -2457,7 +2567,16 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
       {totalContasCartoes > 0 && (
         <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <table style={{ width: "100%", minWidth: 840, tableLayout: "fixed", borderCollapse: "collapse", fontSize: 13 }}>
+              <colgroup>
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "22%" }} />
+                <col style={{ width: "19%" }} />
+                <col style={{ width: "14%" }} />
+                <col style={{ width: "11%" }} />
+                <col style={{ width: "9%" }} />
+                <col style={{ width: "13%" }} />
+              </colgroup>
               <thead>
                 <tr style={{ color: t.textMuted, textAlign: "left" }}>
                   <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("data")} title="Ordenar por data">
@@ -2467,30 +2586,24 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Descrição {sortCol === "descricao" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
                   </th>
                   <th style={{ ...thStyle, padding: "12px 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                      Categoria
-                      <select value={filtroCategoria} onChange={(e) => mudarFiltroCategoria(e.target.value)} title="Filtrar por categoria"
-                        style={{ fontSize: 10.5, border: `1px solid ${t.border}`, borderRadius: 5, background: t.surface, color: t.text, padding: "1px 2px", fontWeight: 500 }}>
-                        <option value="">Todas</option>
-                        {categoriasDisponiveis.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
-                      </select>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      Categoria / Subcategoria
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <select value={filtroCategoria} onChange={(e) => mudarFiltroCategoria(e.target.value)} title="Filtrar por categoria"
+                          style={{ fontSize: 10.5, border: `1px solid ${t.border}`, borderRadius: 5, background: t.surface, color: t.text, padding: "1px 2px", fontWeight: 500, minWidth: 0, flex: 1 }}>
+                          <option value="">Todas categorias</option>
+                          {categoriasDisponiveis.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                        </select>
+                        <select value={filtroSubcategoria} onChange={(e) => setFiltroSubcategoria(e.target.value)} title="Filtrar por subcategoria"
+                          style={{ fontSize: 10.5, border: `1px solid ${t.border}`, borderRadius: 5, background: t.surface, color: t.text, padding: "1px 2px", fontWeight: 500, minWidth: 0, flex: 1 }}>
+                          <option value="">Todas subs</option>
+                          {subcategoriasDisponiveis.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
+                        </select>
+                      </div>
                     </div>
                   </th>
-                  <th style={{ ...thStyle, padding: "12px 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                      Subcategoria
-                      <select value={filtroSubcategoria} onChange={(e) => setFiltroSubcategoria(e.target.value)} title="Filtrar por subcategoria"
-                        style={{ fontSize: 10.5, border: `1px solid ${t.border}`, borderRadius: 5, background: t.surface, color: t.text, padding: "1px 2px", fontWeight: 500 }}>
-                        <option value="">Todas</option>
-                        {subcategoriasDisponiveis.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
-                      </select>
-                    </div>
-                  </th>
-                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("origem")} title="Agrupar por origem">
+                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("origem")} title="Agrupar por origem (conta ou cartão)">
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Origem {sortCol === "origem" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
-                  </th>
-                  <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("cartao")} title="Agrupar por cartão">
-                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Cartão {sortCol === "cartao" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
                   </th>
                   <th style={{ ...thStyle, padding: "12px 16px", cursor: "pointer", userSelect: "none" }} onClick={() => alternarOrdenacao("valor")} title="Ordenar por valor">
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>Valor {sortCol === "valor" ? (sortDir === "asc" ? <ArrowUp size={11} color={t.primary} /> : <ArrowDown size={11} color={t.primary} />) : <ArrowUpDown size={11} style={{ opacity: 0.35 }} />}</div>
@@ -2504,7 +2617,7 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
               <tbody>
                 {lista.length === 0 && (
                   <tr>
-                    <td colSpan={9} style={{ padding: "32px 16px" }}>
+                    <td colSpan={7} style={{ padding: "32px 16px" }}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", gap: 6, color: t.textMuted }}>
                         <SearchX size={22} color={t.textMuted} />
                         <span style={{ fontSize: 13 }}>Nenhuma transação encontrada com os filtros atuais.</span>
@@ -2515,9 +2628,9 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                 )}
                 {lista.slice(0, qtdVisivel).map((tx) => (
                   <tr key={tx.id} style={{ opacity: tx.status === "cancelado" ? 0.5 : 1 }}>
-                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px" }}>{dataBR(tx.data)}</td>
-                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", overflowWrap: "anywhere" }}>{dataBR(tx.data)}</td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px", overflowWrap: "anywhere" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
                         {tx.tipo === "Receita" ? <ArrowUpCircle size={14} color={t.primary} /> : <ArrowDownCircle size={14} color={t.danger} />}
                         <span>{tx.descricao}</span>
                         {tx.parcelaTotal > 1 && <span style={{ fontSize: 10.5, color: t.textMuted, background: t.surfaceAlt, padding: "1px 6px", borderRadius: 5 }}><Repeat size={9} style={{ marginRight: 3, display: "inline" }} />{tx.parcelaAtual}/{tx.parcelaTotal}</span>}
@@ -2525,25 +2638,15 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                       </div>
                       {tx.tipo === "Receita" && tx.dataRecebimento && <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 2 }}>Previsão de recebimento: {dataBR(tx.dataRecebimento)}</div>}
                     </td>
-                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px", overflowWrap: "anywhere" }}>
                       {categoriaNome(db, tx) ? <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><Tags size={11} color={t.textMuted} />{categoriaNome(db, tx)}</span> : <span style={{ color: t.textMuted }}>—</span>}
+                      {subcategoriaNome(db, tx) && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2 }}>{subcategoriaNome(db, tx)}</div>}
                     </td>
-                    <td style={{ ...tdStyle(t), padding: "10px 16px", color: t.textMuted }}>
-                      {subcategoriaNome(db, tx) || "—"}
-                    </td>
-                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px", overflowWrap: "anywhere" }}>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                         {tx.origemTipo === "cartao" ? <CreditCard size={12} color={t.textMuted} /> : <Wallet size={12} color={t.textMuted} />}
                         {origemNome(db, tx)}
                       </span>
-                    </td>
-                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
-                      {cartaoNome(db, tx) ? (
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-                          <CreditCard size={12} color={t.textMuted} />
-                          {cartaoNome(db, tx)}
-                        </span>
-                      ) : <span style={{ color: t.textMuted }}>—</span>}
                     </td>
                     <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", color: tx.tipo === "Receita" ? t.primary : t.danger, fontWeight: 600 }}>
                       {tx.tipo === "Receita" ? "+" : "−"} {fmtBRL(tx.valor)}
@@ -2696,6 +2799,37 @@ function ModalTransacao({ t, db, dado, tipoInicial, onClose, onSave, onQuickAddS
         <CurrencyInput t={t} centavos={centavos} onChange={setCentavos} placeholder="0,00" />
       </Field>
 
+      {tipo === "Despesa" && (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, margin: "0 0 12px" }}>
+          <Field label="Conta" t={t} icon={<Wallet size={14} />}>
+            <select value={contaId} onChange={(e) => { setContaId(e.target.value); if (e.target.value) setCartaoId(""); }} style={selectStyle(t)}>
+              <option value="">Nenhuma</option>
+              {contasAtivas.map((c) => <option key={c.id} value={c.id}>{c.nomeConta}</option>)}
+            </select>
+          </Field>
+          <Field label="Cartão" t={t} icon={<CreditCard size={14} />}>
+            <select value={cartaoId} onChange={(e) => {
+              const novoCartaoId = e.target.value;
+              setCartaoId(novoCartaoId);
+              if (novoCartaoId) {
+                setContaId("");
+                const cartaoEscolhido = cartoesAtivos.find((c) => c.id === novoCartaoId);
+                const vencimentoCartao = cartaoEscolhido ? proximaDataDoMes(cartaoEscolhido.diaVencimento) : null;
+                if (vencimentoCartao) setDataVencimento(vencimentoCartao);
+              }
+            }} style={selectStyle(t)}>
+              <option value="">Nenhum</option>
+              {cartoesAtivos.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </Field>
+        </div>
+      )}
+      {tipo === "Despesa" && (
+        <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 12px" }}>
+          {cartoesAtivos.length === 0 ? "Nenhum cartão cadastrado ainda — " : ""}Selecione apenas uma origem: conta OU cartão.
+        </p>
+      )}
+
       {tipo === "Despesa" ? (
         <Field label="Data de vencimento" t={t} icon={<CalendarClock size={14} />}>
           <input type="date" value={dataVencimento} onChange={(e) => setDataVencimento(e.target.value)} style={inputStyle(t)} />
@@ -2733,23 +2867,27 @@ function ModalTransacao({ t, db, dado, tipoInicial, onClose, onSave, onQuickAddS
         </>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, margin: "12px 0" }}>
-        <Field label="Conta" t={t} icon={<Wallet size={14} />}>
-          <select value={contaId} onChange={(e) => { setContaId(e.target.value); if (e.target.value) setCartaoId(""); }} style={selectStyle(t)}>
-            <option value="">Nenhuma</option>
-            {contasAtivas.map((c) => <option key={c.id} value={c.id}>{c.nomeConta}</option>)}
-          </select>
-        </Field>
-        <Field label="Cartão" t={t} icon={<CreditCard size={14} />}>
-          <select value={cartaoId} onChange={(e) => { setCartaoId(e.target.value); if (e.target.value) setContaId(""); }} style={selectStyle(t)}>
-            <option value="">Nenhum</option>
-            {cartoesAtivos.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
-          </select>
-        </Field>
-      </div>
-      <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 12px" }}>
-        {cartoesAtivos.length === 0 ? "Nenhum cartão cadastrado ainda — " : ""}Selecione apenas uma origem: conta OU cartão.
-      </p>
+      {tipo === "Receita" && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, margin: "12px 0" }}>
+            <Field label="Conta" t={t} icon={<Wallet size={14} />}>
+              <select value={contaId} onChange={(e) => { setContaId(e.target.value); if (e.target.value) setCartaoId(""); }} style={selectStyle(t)}>
+                <option value="">Nenhuma</option>
+                {contasAtivas.map((c) => <option key={c.id} value={c.id}>{c.nomeConta}</option>)}
+              </select>
+            </Field>
+            <Field label="Cartão" t={t} icon={<CreditCard size={14} />}>
+              <select value={cartaoId} onChange={(e) => { setCartaoId(e.target.value); if (e.target.value) setContaId(""); }} style={selectStyle(t)}>
+                <option value="">Nenhum</option>
+                {cartoesAtivos.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+            </Field>
+          </div>
+          <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 12px" }}>
+            {cartoesAtivos.length === 0 ? "Nenhum cartão cadastrado ainda — " : ""}Selecione apenas uma origem: conta OU cartão.
+          </p>
+        </>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, margin: "0 0 12px" }}>
         <Field label="Categoria" t={t} icon={<Tags size={14} />}>
@@ -4078,7 +4216,21 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
       if (!mapa.has(chave)) mapa.set(chave, { categoria: cat ? cat.nome : "Sem categoria", cor: cat ? cat.cor : t.textMuted, total: 0 });
       mapa.get(chave).total += Number(tx.valor) || 0;
     });
-    return Array.from(mapa.values()).sort((a, b) => b.total - a.total);
+    // % que cada categoria representa da receita do período, e comparação com a meta ideal de alocação
+    // (50% Fixo / 30% Variável / 10% Lazer / 10% Investimentos) — só preenchida pra categorias com esse nome.
+    return Array.from(mapa.values())
+      .map((d) => {
+        const idealPct = METAS_IDEAIS_CATEGORIA[normalizarNomeCategoria(d.categoria)] ?? null;
+        const pctReceita = totalReceitas > 0 ? (d.total / totalReceitas) * 100 : null;
+        return {
+          ...d,
+          pctReceita,
+          idealPct,
+          idealValor: idealPct != null && totalReceitas > 0 ? (idealPct / 100) * totalReceitas : null,
+          pctLabel: pctReceita != null ? `${pctReceita.toFixed(0)}%${idealPct != null ? ` (ideal ${idealPct}%)` : ""}` : ""
+        };
+      })
+      .sort((a, b) => b.total - a.total);
   })();
 
   const despesasPorSubcategoria = (() => {
@@ -4240,17 +4392,28 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
           </div>
 
           <div className="grid-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-            <ChartCard t={t} title="Despesas por categoria" subtitle="Total gasto em cada categoria no período filtrado">
+            <ChartCard t={t} title="Despesas por categoria" subtitle="Total gasto e % da receita em cada categoria, frente à meta ideal (50% Fixo / 30% Variável / 10% Lazer / 10% Investimentos)">
               {despesasPorCategoria.length === 0 ? <EmptyChart t={t} /> : (
-                <ResponsiveContainer width="100%" height={Math.max(220, despesasPorCategoria.length * 32 + 40)}>
-                  <BarChart data={despesasPorCategoria} layout="vertical" margin={{ left: 8 }}>
+                <ResponsiveContainer width="100%" height={Math.max(240, despesasPorCategoria.length * 44 + 50)}>
+                  <BarChart data={despesasPorCategoria} layout="vertical" margin={{ left: 8, right: 96, top: 4, bottom: 4 }} barGap={2}>
                     <CartesianGrid stroke={t.border} horizontal={false} />
                     <XAxis type="number" tick={{ fill: t.textMuted, fontSize: 10.5 }} axisLine={{ stroke: t.border }} tickLine={false} />
                     <YAxis type="category" dataKey="categoria" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
-                    <Tooltip contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }} itemStyle={{ color: t.text }} labelStyle={{ color: t.text }} formatter={(v) => fmtBRL(v)} />
+                    <Tooltip
+                      contentStyle={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }}
+                      itemStyle={{ color: t.text }} labelStyle={{ color: t.text }}
+                      formatter={(value, name, props) => {
+                        if (name === "Ideal") return [`${fmtBRL(value)} (${props.payload.idealPct}% da receita)`, name];
+                        const pct = props.payload.pctReceita;
+                        return [`${fmtBRL(value)}${pct != null ? ` (${pct.toFixed(0)}% da receita)` : ""}`, name];
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12, color: t.text }} />
                     <Bar dataKey="total" name="Despesas" radius={[0, 4, 4, 0]} isAnimationActive={false}>
                       {despesasPorCategoria.map((d, i) => <Cell key={i} fill={d.cor} />)}
+                      <LabelList dataKey="pctLabel" position="right" style={{ fill: t.textMuted, fontSize: 10.5 }} />
                     </Bar>
+                    <Bar dataKey="idealValor" name="Ideal" fill={t.textMuted} fillOpacity={0.28} radius={[0, 4, 4, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -5996,6 +6159,38 @@ const ConfigView = React.memo(function ConfigView({ t, session, theme, toggleThe
   const [modalReset, setModalReset] = useState(false);
   const [erroBackup, setErroBackup] = useState("");
   const [confirmandoRestaurar, setConfirmandoRestaurar] = useState(null); // dados pendentes de confirmação
+  const [statusNotificacao, setStatusNotificacao] = useState("carregando"); // carregando | indisponivel | negado | desligado | ligando | ligado | erro
+  const [erroNotificacao, setErroNotificacao] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      if (!VAPID_PUBLIC_KEY || !("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+        setStatusNotificacao("indisponivel");
+        return;
+      }
+      if (Notification.permission === "denied") { setStatusNotificacao("negado"); return; }
+      const inscricao = await inscricaoPushAtual().catch(() => null);
+      setStatusNotificacao(inscricao ? "ligado" : "desligado");
+    })();
+  }, []);
+
+  const alternarNotificacoes = async () => {
+    setErroNotificacao("");
+    if (statusNotificacao === "ligado") {
+      setStatusNotificacao("ligando"); // reaproveita o estado de "ocupado" pra desabilitar o botão durante a troca
+      await desativarNotificacoesPush().catch(() => {});
+      setStatusNotificacao("desligado");
+      return;
+    }
+    setStatusNotificacao("ligando");
+    try {
+      await ativarNotificacoesPush(session.id);
+      setStatusNotificacao("ligado");
+    } catch (err) {
+      setErroNotificacao(err.message || "Não foi possível ativar as notificações.");
+      setStatusNotificacao(Notification.permission === "denied" ? "negado" : "desligado");
+    }
+  };
 
   const exportarBackupCompleto = () => {
     const payload = JSON.stringify(db, null, 2);
@@ -6089,6 +6284,27 @@ const ConfigView = React.memo(function ConfigView({ t, session, theme, toggleThe
           <span style={{ fontSize: 13.5 }}>Tema {theme === "light" ? "Claro" : "Escuro"}</span>
           <button onClick={toggleTheme} style={btnPrimary(t)}>{theme === "light" ? <Moon size={14} /> : <Sun size={14} />} Alternar</button>
         </div>
+      </div>
+      <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
+        <SectionTitle t={t} title="Notificações" icon={Bell} />
+        {statusNotificacao === "indisponivel" ? (
+          <p style={{ fontSize: 12.5, color: t.textMuted, margin: 0 }}>Notificações ainda não configuradas neste app, ou não suportadas neste navegador.</p>
+        ) : (
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ fontSize: 13.5 }}>Avisar de vencimentos próximos{statusNotificacao === "ligado" ? " neste aparelho" : ""}</span>
+              <button onClick={alternarNotificacoes} disabled={statusNotificacao === "carregando" || statusNotificacao === "ligando" || statusNotificacao === "negado"}
+                style={{ ...(statusNotificacao === "ligado" ? btnGhost(t) : btnPrimary(t)), opacity: (statusNotificacao === "carregando" || statusNotificacao === "ligando" || statusNotificacao === "negado") ? 0.6 : 1 }}>
+                <Bell size={14} /> {statusNotificacao === "ligado" ? "Desativar" : statusNotificacao === "ligando" ? "Aguarde…" : "Ativar"}
+              </button>
+            </div>
+            {statusNotificacao === "negado" && <p style={{ fontSize: 11.5, color: t.danger, marginTop: 8 }}>Notificações bloqueadas nas permissões do navegador/celular para este site — precisa liberar manualmente lá para ativar aqui.</p>}
+            {erroNotificacao && <p style={{ fontSize: 11.5, color: t.danger, marginTop: 8 }}>{erroNotificacao}</p>}
+            <p style={{ fontSize: 11, color: t.textMuted, marginTop: 8, marginBottom: 0 }}>
+              Precisa ativar em cada aparelho separadamente. No iPhone, só funciona depois de instalar o app na Tela de Início (Compartilhar → Adicionar à Tela de Início) — notificação não chega direto pelo Safari.
+            </p>
+          </>
+        )}
       </div>
       <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
         <SectionTitle t={t} title="Backup Completo" icon={FileSpreadsheet} />
@@ -6470,7 +6686,7 @@ export default function App() {
           onMenu={() => setMobileOpen(true)}
           routeTitle={ROUTE_TITLES[route]}
         />
-        <main className="scrollbar main-content" style={{ flex: 1, minHeight: 0, overflowY: "auto", scrollbarGutter: "stable both-edges", padding: "24px", maxWidth: 1360, width: "100%", margin: "0 auto" }}>
+        <main className="scrollbar main-content" style={{ flex: 1, minHeight: 0, overflowY: "auto", scrollbarGutter: "stable both-edges", padding: "24px", maxWidth: "none", width: "100%", margin: "0" }}>
           {route === "dashboard" && (
             <Dashboard
               t={t} db={db}
