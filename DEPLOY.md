@@ -6,6 +6,10 @@ Tudo tem plano gratuito suficiente para uso pessoal/família.
 
 Tempo estimado: 30–45 minutos na primeira vez.
 
+> Quer ativar notificações push de vencimento (aviso no celular mesmo com o
+> app fechado)? Isso é opcional e tem um guia separado: veja `NOTIFICACOES.md`
+> depois de terminar a publicação abaixo.
+
 ---
 
 ## Parte 1 — Supabase (banco de dados + login)

@@ -51,3 +51,34 @@ create trigger financas_dados_atualizado_em
   before update on public.financas_dados
   for each row
   execute function public.atualizar_timestamp();
+
+-- ============================================================
+-- Notificações push (lembretes de vencimento)
+-- Guarda a "inscrição" de cada navegador/aparelho que ativou notificações,
+-- pra a função agendada (Netlify Function) saber pra quem mandar o aviso.
+-- Rode este bloco também no SQL Editor (pode colar junto com o de cima,
+-- ou depois — não precisa apagar nada que já existe).
+-- ============================================================
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  criado_em timestamptz not null default now()
+);
+
+alter table public.push_subscriptions enable row level security;
+
+-- Cada pessoa só vê/gerencia as próprias inscrições de notificação.
+create policy "Usuário vê apenas as próprias inscrições de notificação"
+  on public.push_subscriptions for select
+  using (auth.uid() = user_id);
+
+create policy "Usuário insere apenas as próprias inscrições de notificação"
+  on public.push_subscriptions for insert
+  with check (auth.uid() = user_id);
+
+create policy "Usuário apaga apenas as próprias inscrições de notificação"
+  on public.push_subscriptions for delete
+  using (auth.uid() = user_id);
