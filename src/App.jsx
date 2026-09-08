@@ -905,19 +905,26 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     .slice(0, 8);
 
   // Alerta de orçamento em destaque: sempre mostra as 4 classes da meta de alocação (Fixo/Variável/
-  // Lazer/Investimentos — mesma meta 50/30/10/10 usada no gráfico do Analista Financeiro), não só quando
-  // alguma estoura. Cada uma com seu status (dentro do previsto / atenção / estourado / não cadastrada) —
-  // diferente do card "Realizado vs Planejado" abaixo, que só lista quem já tem valor lançado ou planejado.
+  // Lazer/Investimentos — mesma meta 50/30/10/10 usada no gráfico "Despesas por categoria" do Analista
+  // Financeiro), não só quando alguma estoura. Cada uma com seu status (dentro do previsto / atenção /
+  // estourado / não cadastrada / sem receita) — diferente do card "Realizado vs Planejado" abaixo, que
+  // usa o valor planejado manualmente e só lista quem já tem valor lançado ou planejado.
+  // Aqui o "planejado" de referência não é mais o valor que o usuário digitou em Planejamento, e sim o
+  // valor ideal calculado a partir da meta % sobre a receita do mês (mesma conta do gráfico) — assim o
+  // "atual %" e o "meta %" mostrados batem exatamente com os do gráfico.
   const ORDEM_CLASSES_ALERTA = ["FIXO", "VARIAVEL", "LAZER", "INVESTIMENTOS"];
   const LABEL_CLASSES_ALERTA = { FIXO: "FIXO", VARIAVEL: "VARIÁVEL", LAZER: "LAZER", INVESTIMENTOS: "INVESTIMENTOS" };
   const alertasOrcamento = ORDEM_CLASSES_ALERTA.map((chave) => {
+    const metaPct = METAS_IDEAIS_CATEGORIA[chave] ?? 0;
     const cat = categoriasDespesa.find((c) => normalizarNomeCategoria(c.nome) === chave);
-    if (!cat) return { classe: chave, categoria: LABEL_CLASSES_ALERTA[chave], cor: null, planejado: 0, realizado: 0, pct: 0, status: "nao-cadastrada" };
-    const planejado = planejadoCategoria(cat.id);
+    if (!cat) return { classe: chave, categoria: LABEL_CLASSES_ALERTA[chave], cor: null, metaPct, atualPct: 0, realizado: 0, idealValor: 0, status: "nao-cadastrada" };
     const realizado = realizadoCategoriaMes(cat.id);
-    const pct = planejado > 0 ? Math.round((realizado / planejado) * 100) : 0;
-    const status = planejado === 0 ? "sem-orcamento" : pct >= 100 ? "estourado" : pct >= 80 ? "atencao" : "ok";
-    return { classe: chave, categoria: cat.nome, cor: cat.cor, planejado, realizado, pct, status };
+    if (receitasMes <= 0) return { classe: chave, categoria: cat.nome, cor: cat.cor, metaPct, atualPct: 0, realizado, idealValor: 0, status: "sem-receita" };
+    const atualPct = Math.round((realizado / receitasMes) * 100);
+    const idealValor = receitasMes * (metaPct / 100);
+    const razao = metaPct > 0 ? (atualPct / metaPct) * 100 : (atualPct > 0 ? 100 : 0);
+    const status = razao >= 100 ? "estourado" : razao >= 80 ? "atencao" : "ok";
+    return { classe: chave, categoria: cat.nome, cor: cat.cor, metaPct, atualPct, realizado, idealValor, status };
   });
   const severidadeGeralOrcamento = alertasOrcamento.some((a) => a.status === "estourado") ? "estourado"
     : alertasOrcamento.some((a) => a.status === "atencao") ? "atencao" : "ok";
@@ -1121,30 +1128,55 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
 
       {(() => {
         const corSeveridade = severidadeGeralOrcamento === "estourado" ? t.danger : severidadeGeralOrcamento === "atencao" ? t.accent : t.primary;
-        const tituloSeveridade = severidadeGeralOrcamento === "estourado" ? "Orçamento estourado" : severidadeGeralOrcamento === "atencao" ? "Orçamento perto do limite" : "Orçamento sob controle";
-        const CORES_STATUS = { estourado: t.danger, atencao: t.accent, ok: t.primary, "sem-orcamento": t.textMuted, "nao-cadastrada": t.textMuted };
-        const LABEL_STATUS = { estourado: "estourado", atencao: "atenção", ok: "dentro do previsto", "sem-orcamento": "sem orçamento definido", "nao-cadastrada": "categoria não cadastrada" };
+        const CORES_STATUS = { estourado: t.danger, atencao: t.accent, ok: t.primary, "sem-receita": t.textMuted, "nao-cadastrada": t.textMuted };
+        const LABEL_STATUS = { estourado: "estourado", atencao: "atenção", ok: "dentro do previsto", "sem-receita": "sem receita no mês", "nao-cadastrada": "categoria não cadastrada" };
+        const qtdEstourado = alertasOrcamento.filter((a) => a.status === "estourado").length;
+        const qtdAtencao = alertasOrcamento.filter((a) => a.status === "atencao").length;
+        const plural = (n, singular, pluralForm) => `${n} ${n === 1 ? singular : pluralForm}`;
+        const resumoSeveridade = qtdEstourado > 0 ? `${plural(qtdEstourado, "categoria estourada", "categorias estouradas")}`
+          : qtdAtencao > 0 ? `${plural(qtdAtencao, "categoria em atenção", "categorias em atenção")}`
+          : "tudo dentro do previsto";
         return (
           <div style={{ background: `${corSeveridade}0D`, border: `1.5px solid ${corSeveridade}50`, borderRadius: 14, padding: "14px 16px", marginBottom: 18 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <AlertTriangle size={16} color={corSeveridade} />
-              <span style={{ fontSize: 13, fontWeight: 700, color: corSeveridade }}>{tituloSeveridade} em {MESES_LONGOS[mesSel]}</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <AlertTriangle size={16} color={corSeveridade} />
+                <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>Meta x Atual em {MESES_LONGOS[mesSel]}</span>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 700, color: corSeveridade, textTransform: "uppercase", letterSpacing: 0.3 }}>{resumoSeveridade}</span>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {alertasOrcamento.map((a) => {
                 const cor = CORES_STATUS[a.status];
+                const temNumeros = a.status === "estourado" || a.status === "atencao" || a.status === "ok";
                 const titulo = a.status === "nao-cadastrada" ? "Nenhuma categoria de despesa com esse nome cadastrada ainda"
-                  : a.status === "sem-orcamento" ? "Defina um valor planejado em “Planejamento” para acompanhar aqui"
-                  : `${fmtBRL(a.realizado)} de ${fmtBRL(a.planejado)} planejados`;
+                  : a.status === "sem-receita" ? "Lance alguma receita no mês para calcular o % sobre a receita"
+                  : `${fmtBRL(a.realizado)} gastos (${a.atualPct}% da receita) — ideal: ${fmtBRL(a.idealValor)} (${a.metaPct}%)`;
                 return (
                   <div key={a.classe} title={titulo}
-                    style={{ display: "flex", alignItems: "center", gap: 7, background: t.surface, border: `1px solid ${cor}60`, borderRadius: 9, padding: "6px 12px", opacity: (a.status === "nao-cadastrada" || a.status === "sem-orcamento") ? 0.75 : 1 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 3, background: a.cor || t.textMuted, flexShrink: 0 }} />
-                    <span style={{ fontSize: 12.5, fontWeight: 600 }}>{a.categoria}</span>
-                    {(a.status === "estourado" || a.status === "atencao" || a.status === "ok") && (
-                      <span className="mono" style={{ fontSize: 12.5, fontWeight: 700, color: cor }}>{a.pct}%</span>
+                    style={{ display: "flex", flexDirection: "column", gap: 2, background: t.surface, border: `1px solid ${cor}60`, borderRadius: 9, padding: "7px 12px", minWidth: 128, opacity: (a.status === "nao-cadastrada" || a.status === "sem-receita") ? 0.75 : 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 3, background: a.cor || t.textMuted, flexShrink: 0 }} />
+                      <span style={{ fontSize: 12.5, fontWeight: 600 }}>{a.categoria}</span>
+                    </div>
+                    {temNumeros ? (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
+                          <span style={{ color: t.textMuted, fontWeight: 600 }}>Meta</span>
+                          <span className="mono" style={{ fontWeight: 700, color: t.textMuted }}>{a.metaPct}%</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
+                          <span style={{ color: t.textMuted, fontWeight: 600 }}>Atual</span>
+                          <span className="mono" style={{ fontWeight: 700, color: cor }}>{a.atualPct}%</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
+                        <span style={{ color: t.textMuted, fontWeight: 600 }}>Meta</span>
+                        <span className="mono" style={{ fontWeight: 700, color: t.textMuted }}>{a.metaPct}%</span>
+                      </div>
                     )}
-                    <span style={{ fontSize: 10, fontWeight: 700, color: cor, textTransform: "uppercase", letterSpacing: 0.3 }}>{LABEL_STATUS[a.status]}</span>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: cor, textTransform: "uppercase", letterSpacing: 0.3, marginTop: 2 }}>{LABEL_STATUS[a.status]}</span>
                   </div>
                 );
               })}
