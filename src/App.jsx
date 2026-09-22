@@ -920,10 +920,18 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     if (!cat) return { classe: chave, categoria: LABEL_CLASSES_ALERTA[chave], cor: null, metaPct, atualPct: 0, realizado: 0, idealValor: 0, status: "nao-cadastrada" };
     const realizado = realizadoCategoriaMes(cat.id);
     if (receitasMes <= 0) return { classe: chave, categoria: cat.nome, cor: cat.cor, metaPct, atualPct: 0, realizado, idealValor: 0, status: "sem-receita" };
-    const atualPct = Math.round((realizado / receitasMes) * 100);
+    // Status calculado com o % exato (sem arredondar) — antes 9,6% arredondava pra 10% e já contava como estourado.
+    const atualPctExato = (realizado / receitasMes) * 100;
+    const atualPctRedondo = Math.round(atualPctExato);
+    // Se o arredondamento esconder a diferença pra meta (ex.: 10,4% virando 10%), mostra 1 casa decimal.
+    const atualPct = (atualPctRedondo === metaPct && Math.abs(atualPctExato - metaPct) >= 0.05)
+      ? atualPctExato.toFixed(1).replace(".", ",") : atualPctRedondo;
     const idealValor = receitasMes * (metaPct / 100);
-    const razao = metaPct > 0 ? (atualPct / metaPct) * 100 : (atualPct > 0 ? 100 : 0);
-    const status = razao >= 100 ? "estourado" : razao >= 80 ? "atencao" : "ok";
+    const razao = metaPct > 0 ? (atualPctExato / metaPct) * 100 : (atualPctExato > 0 ? 100 : 0);
+    // Investimentos funciona ao contrário: passar da meta é bom. Não conta como estouro/atenção no resumo.
+    const status = chave === "INVESTIMENTOS"
+      ? (razao >= 100 ? "meta-atingida" : "abaixo-meta")
+      : razao > 100 ? "estourado" : razao >= 80 ? "atencao" : "ok";
     return { classe: chave, categoria: cat.nome, cor: cat.cor, metaPct, atualPct, realizado, idealValor, status };
   });
   const severidadeGeralOrcamento = alertasOrcamento.some((a) => a.status === "estourado") ? "estourado"
@@ -1128,8 +1136,8 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
 
       {(() => {
         const corSeveridade = severidadeGeralOrcamento === "estourado" ? t.danger : severidadeGeralOrcamento === "atencao" ? t.accent : t.primary;
-        const CORES_STATUS = { estourado: t.danger, atencao: t.accent, ok: t.primary, "sem-receita": t.textMuted, "nao-cadastrada": t.textMuted };
-        const LABEL_STATUS = { estourado: "estourado", atencao: "atenção", ok: "dentro do previsto", "sem-receita": "sem receita no mês", "nao-cadastrada": "categoria não cadastrada" };
+        const CORES_STATUS = { estourado: t.danger, atencao: t.accent, ok: t.primary, "meta-atingida": t.primary, "abaixo-meta": t.textMuted, "sem-receita": t.textMuted, "nao-cadastrada": t.textMuted };
+        const LABEL_STATUS = { estourado: "estourado", atencao: "atenção", ok: "dentro do previsto", "meta-atingida": "meta atingida", "abaixo-meta": "abaixo da meta", "sem-receita": "sem receita no mês", "nao-cadastrada": "categoria não cadastrada" };
         const qtdEstourado = alertasOrcamento.filter((a) => a.status === "estourado").length;
         const qtdAtencao = alertasOrcamento.filter((a) => a.status === "atencao").length;
         const plural = (n, singular, pluralForm) => `${n} ${n === 1 ? singular : pluralForm}`;
@@ -1148,7 +1156,7 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {alertasOrcamento.map((a) => {
                 const cor = CORES_STATUS[a.status];
-                const temNumeros = a.status === "estourado" || a.status === "atencao" || a.status === "ok";
+                const temNumeros = a.status === "estourado" || a.status === "atencao" || a.status === "ok" || a.status === "meta-atingida" || a.status === "abaixo-meta";
                 const titulo = a.status === "nao-cadastrada" ? "Nenhuma categoria de despesa com esse nome cadastrada ainda"
                   : a.status === "sem-receita" ? "Lance alguma receita no mês para calcular o % sobre a receita"
                   : `${fmtBRL(a.realizado)} gastos (${a.atualPct}% da receita) — ideal: ${fmtBRL(a.idealValor)} (${a.metaPct}%)`;
@@ -2791,22 +2799,40 @@ function ModalTransacao({ t, db, dado, tipoInicial, onClose, onSave, onQuickAddS
 
   const salvar = () => {
     // Despesa com categoria e orçamento definido: avisa se, somando esse lançamento, passa de 50% do planejado no mês
+    // Referência de planejado = a MESMA do banner "Meta x Atual" do Dashboard:
+    //  - categorias Fixo/Variável/Lazer: meta % (50/30/10) × receita do mês → alerta a partir de 80% (atenção)
+    //  - Investimentos: não alerta (gastar mais que a meta é bom)
+    //  - outras categorias (ou mês sem receita): cai no valor planejado manual da tela Planejamento, alerta a partir de 50%
     if (tipo === "Despesa" && categoriaId) {
-      const orcamento = (db.orcamentos || []).find((o) => o.categoriaId === categoriaId && o.status === "ativo");
       const [anoTx, mesTx] = dataFinal.split("-").map(Number);
-      const planejado = planejadoNoMes(orcamento, anoTx, mesTx - 1);
+      const noMesTx = (tx) => { if (!tx.data) return false; const [y, m] = tx.data.split("-").map(Number); return y === anoTx && m === mesTx; };
+      const ativaTx = (tx) => tx.status !== "cancelado" && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura);
+      const categoriaNomeAtual = db.categorias.find((c) => c.id === categoriaId)?.nome || "";
+      const classe = normalizarNomeCategoria(categoriaNomeAtual);
+      const metaPct = METAS_IDEAIS_CATEGORIA[classe];
+      const receitaMes = (db.transacoes || [])
+        .filter((tx) => tx.id !== dado?.id && tx.tipo === "Receita" && ativaTx(tx) && noMesTx(tx))
+        .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+
+      let planejado = 0, limiteAlerta = 50, baseMeta = null;
+      if (metaPct != null && receitaMes > 0) {
+        if (classe !== "INVESTIMENTOS") { planejado = receitaMes * (metaPct / 100); limiteAlerta = 80; baseMeta = metaPct; }
+      } else if (metaPct == null) {
+        const orcamento = (db.orcamentos || []).find((o) => o.categoriaId === categoriaId && o.status === "ativo");
+        planejado = planejadoNoMes(orcamento, anoTx, mesTx - 1);
+      }
+
       if (planejado > 0) {
         const parcelasNum = podeRepetir ? Math.max(1, Number(parcelas) || 1) : 1;
         const valorNesteMes = parcelasNum > 1 ? Math.round((valor / parcelasNum) * 100) / 100 : valor;
         const jaGasto = (db.transacoes || [])
-          .filter((tx) => tx.id !== dado?.id && tx.tipo === "Despesa" && tx.status !== "cancelado" && tx.categoriaId === categoriaId && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura))
-          .filter((tx) => { if (!tx.data) return false; const [y, m] = tx.data.split("-").map(Number); return y === anoTx && m === mesTx; })
+          .filter((tx) => tx.id !== dado?.id && tx.tipo === "Despesa" && ativaTx(tx) && tx.categoriaId === categoriaId && noMesTx(tx))
           .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
         const totalComEsse = jaGasto + valorNesteMes;
         const pct = (totalComEsse / planejado) * 100;
-        if (pct >= 50) {
-          const categoriaNomeAtual = db.categorias.find((c) => c.id === categoriaId)?.nome || "";
-          setAlertaOrcamento({ pct, categoriaNome: categoriaNomeAtual, planejado, totalComEsse });
+        if (pct >= limiteAlerta) {
+          const pctReceita = baseMeta != null ? (totalComEsse / receitaMes) * 100 : null;
+          setAlertaOrcamento({ pct, categoriaNome: categoriaNomeAtual, planejado, totalComEsse, baseMeta, pctReceita });
           return;
         }
       }
@@ -2983,10 +3009,16 @@ function ModalTransacao({ t, db, dado, tipoInicial, onClose, onSave, onQuickAddS
             </div>
           </div>
           <p style={{ fontSize: 13.5, textAlign: "center", marginBottom: 4 }}>
-            Com esse lançamento, você atinge <strong style={{ color: t.danger }}>{alertaOrcamento.pct.toFixed(0)}%</strong> do planejado para <strong>{alertaOrcamento.categoriaNome}</strong> neste mês.
+            {alertaOrcamento.baseMeta != null ? (
+              <>Com esse lançamento, <strong>{alertaOrcamento.categoriaNome}</strong> chega a <strong style={{ color: alertaOrcamento.pct > 100 ? t.danger : t.accent }}>{alertaOrcamento.pctReceita.toFixed(0)}%</strong> da receita do mês (meta: {alertaOrcamento.baseMeta}%).</>
+            ) : (
+              <>Com esse lançamento, você atinge <strong style={{ color: t.danger }}>{alertaOrcamento.pct.toFixed(0)}%</strong> do planejado para <strong>{alertaOrcamento.categoriaNome}</strong> neste mês.</>
+            )}
           </p>
           <p style={{ fontSize: 12, color: t.textMuted, textAlign: "center", marginBottom: 18 }}>
-            {fmtBRL(alertaOrcamento.totalComEsse)} de {fmtBRL(alertaOrcamento.planejado)} planejados
+            {alertaOrcamento.baseMeta != null
+              ? `${fmtBRL(alertaOrcamento.totalComEsse)} de ${fmtBRL(alertaOrcamento.planejado)} (${alertaOrcamento.pct.toFixed(0)}% da meta)`
+              : `${fmtBRL(alertaOrcamento.totalComEsse)} de ${fmtBRL(alertaOrcamento.planejado)} planejados`}
           </p>
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={() => setAlertaOrcamento(null)} style={{ ...btnGhost(t), flex: 1, justifyContent: "center", fontWeight: 600 }}>Voltar e editar</button>
