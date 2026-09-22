@@ -5405,17 +5405,18 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
             const expandida = classeExpandida === g.classe;
             return (
               <div key={g.classe} style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow, overflow: "hidden" }}>
-                <button onClick={() => setClasseExpandida(expandida ? null : g.classe)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 16, background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
+                <style>{`@media (max-width:640px){.inv-linha{flex-wrap:wrap}.inv-stats{order:3;flex-basis:100%!important;display:grid!important;grid-template-columns:repeat(3,1fr);row-gap:10px;column-gap:8px;padding-top:4px;border-top:1px solid ${t.border}}.inv-stats>div{text-align:left!important;padding-top:6px}.inv-valor{grid-column:span 2}.inv-nome{flex:1 1 auto!important}}`}</style>
+                <button className="inv-linha" onClick={() => setClasseExpandida(expandida ? null : g.classe)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: 16, background: "none", border: "none", cursor: "pointer", textAlign: "left" }}>
                   <div style={{ width: 36, height: 36, borderRadius: 9, background: `${g.cor}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                     <Icone size={16} color={g.cor} />
                   </div>
-                  <span style={{ fontWeight: 700, fontSize: 14, flex: "0 0 auto", minWidth: 100, color: t.text }}>{g.classe}</span>
-                  <div style={{ display: "flex", flex: 1, justifyContent: "flex-end", gap: 22, flexWrap: "wrap" }}>
+                  <span className="inv-nome" style={{ fontWeight: 700, fontSize: 14, flex: "0 0 auto", minWidth: 100, color: t.text }}>{g.classe}</span>
+                  <div className="inv-stats" style={{ display: "flex", flex: 1, justifyContent: "flex-end", gap: 22, flexWrap: "wrap" }}>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 10.5, color: t.textMuted }}>Ativos</div>
                       <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: t.text }}>{g.qtd}</div>
                     </div>
-                    <div style={{ textAlign: "right" }}>
+                    <div className="inv-valor" style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 10.5, color: t.textMuted }}>Valor total</div>
                       <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: t.text }}>{fmtBRL(g.valorTotal)}</div>
                     </div>
@@ -5423,6 +5424,36 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
                       <div style={{ fontSize: 10.5, color: t.textMuted }}>% carteira</div>
                       <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: g.cor }}>{g.pct.toFixed(1)}%</div>
                     </div>
+                    {(() => {
+                      // % ideal (Metas de alocação) logo após o % atual, com a diferença em pontos percentuais
+                      const temMeta = metasClasse[g.classe] !== undefined && metasClasse[g.classe] !== null && metasClasse[g.classe] !== "";
+                      const ideal = temMeta ? Number(metasClasse[g.classe]) || 0 : null;
+                      const dif = ideal != null ? g.pct - ideal : null;
+                      const corDif = dif == null ? t.textMuted : Math.abs(dif) < 0.5 ? t.primary : dif > 0 ? t.accent : t.danger;
+                      return (
+                        <>
+                          <div style={{ textAlign: "right" }}>
+                            <div style={{ fontSize: 10.5, color: t.textMuted }}>% ideal</div>
+                            <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: t.text }}>{ideal != null ? `${ideal.toFixed(1)}%` : "—"}</div>
+                          </div>
+                          <div style={{ textAlign: "right", minWidth: 86 }}>
+                            <div style={{ fontSize: 10.5, color: t.textMuted }}>Diferença</div>
+                            <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: corDif }} title={dif == null ? "Defina a meta em Metas de alocação" : Math.abs(dif) < 0.5 ? "No alvo" : dif > 0 ? "Acima do ideal" : "Abaixo do ideal"}>
+                              {dif == null ? "—" : `${dif > 0 ? "+" : dif < 0 ? "−" : ""}${Math.abs(dif).toFixed(1)}%`}
+                            </div>
+                            {dif != null && (() => {
+                              // Em reais: quanto a classe tem a mais (+) ou a menos (−) que o ideal na carteira atual
+                              const difReais = g.valorTotal - (ideal / 100) * totalCarteira;
+                              return (
+                                <div className="mono" style={{ fontSize: 11, fontWeight: 600, color: corDif, opacity: 0.85, marginTop: 1 }}>
+                                  {`${difReais > 0.005 ? "+" : difReais < -0.005 ? "−" : ""}${fmtBRL(Math.abs(difReais))}`}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                   <ChevronRight size={16} style={{ transform: expandida ? "rotate(90deg)" : "none", transition: "transform .15s", flexShrink: 0, color: t.textMuted }} />
                 </button>
