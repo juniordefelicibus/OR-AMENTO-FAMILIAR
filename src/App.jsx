@@ -7,7 +7,7 @@ import {
   LineChart as LineChartIcon, CreditCard, Repeat, CheckCircle2, Ban, ArrowUpCircle,
   ArrowDownCircle, CalendarClock, SlidersHorizontal, ArrowLeftRight, StickyNote, PartyPopper, AlertTriangle, ImagePlus, Bell,
   FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, SearchX,
-  Car, Wrench, ClipboardList, Gauge, Paperclip, Image as ImageIcon
+  Car, Wrench, ClipboardList, Gauge, Paperclip, Image as ImageIcon, Download
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -6491,11 +6491,23 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
 
 function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternarStatus, onNovaOS, onAbrirOS }) {
   const [filtroTipo, setFiltroTipo] = useState("todas");
+  const [dataIni, setDataIni] = useState("");
+  const [dataFim, setDataFim] = useState("");
+  const [busca, setBusca] = useState("");
   const hex = corVeiculoHex(veiculo.cor);
-  const ordens = (db.ordensServico || [])
-    .filter((o) => o.veiculoId === veiculo.id)
+  const todasDoVeiculo = (db.ordensServico || []).filter((o) => o.veiculoId === veiculo.id);
+  // Busca por descrição: procura no nº da OS, itens, descrições dos itens, oficina e observações (sem acento/maiúsculas)
+  const termo = normalizarNomeCategoria(busca);
+  const textoOS = (o) => normalizarNomeCategoria([fmtNumeroOS(o.numero), o.oficina, o.observacao, ...(o.itens || []).flatMap((i) => [i.item, i.descricao])].join(" "));
+  const ordens = todasDoVeiculo
     .filter((o) => filtroTipo === "todas" || o.tipo === filtroTipo)
+    .filter((o) => !dataIni || (o.data || "") >= dataIni)
+    .filter((o) => !dataFim || (o.data || "") <= dataFim)
+    .filter((o) => !termo || textoOS(o).includes(termo))
     .sort((a, b) => (b.data || "").localeCompare(a.data || "") || (b.numero - a.numero));
+  const filtrando = filtroTipo !== "todas" || dataIni || dataFim || termo;
+  const totalFiltrado = ordens.filter((o) => o.status !== "cancelada").reduce((sm, o) => sm + totalOS(o), 0);
+  const limparFiltros = () => { setFiltroTipo("todas"); setDataIni(""); setDataFim(""); setBusca(""); };
 
   const origemPagamento = (os) => {
     const pg = os.pagamento || {};
@@ -6541,14 +6553,30 @@ function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternar
             <button key={id} onClick={() => setFiltroTipo(id)} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${filtroTipo === id ? t.primary : t.border}`, background: filtroTipo === id ? `${t.primary}18` : "transparent", color: filtroTipo === id ? t.primary : t.text, fontWeight: 600, fontSize: 12 }}>{label}</button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => onNovaOS("Documento")} style={btnGhost(t)}><FileText size={14} /> Novo documento</button>
-          <button onClick={() => onNovaOS("Manutenção")} style={btnPrimary(t)}><Wrench size={14} /> Nova OS</button>
-        </div>
+        <button onClick={() => onNovaOS("Manutenção")} style={btnPrimary(t)}><Wrench size={14} /> Nova OS</button>
       </div>
 
-      {ordens.length === 0 ? (
-        <EmptyState t={t} text="Nenhuma ordem de serviço ainda. Abra uma “Nova OS” para registrar uma manutenção ou “Novo documento” para IPVA, licenciamento, seguro, multas…" />
+      <div className="os-filtros" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: t.surface, border: `1px solid ${t.border}`, borderRadius: 12, padding: "10px 12px", marginBottom: 12 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: t.textMuted }}><Calendar size={14} /> Período:</span>
+        <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...celInput(t), width: 150 }} />
+        <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
+        <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...celInput(t), width: 150 }} />
+        <div style={{ flex: 1, minWidth: 200, display: "flex", alignItems: "center", gap: 7, border: `1px solid ${t.border}`, borderRadius: 7, padding: "0 9px", background: t.surface }}>
+          <Search size={14} color={t.textMuted} />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar por item, descrição, oficina ou nº da OS…" style={{ ...inputStyle(t), padding: "7px 0", fontSize: 12.5 }} />
+        </div>
+        {filtrando && <button onClick={limparFiltros} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12.5, fontWeight: 600 }}><X size={13} /> limpar</button>}
+      </div>
+      {filtrando && todasDoVeiculo.length > 0 && (
+        <div style={{ fontSize: 12, color: t.textMuted, margin: "-4px 0 10px" }}>
+          {ordens.length} de {todasDoVeiculo.length} OS · total filtrado <strong className="mono" style={{ color: t.text }}>{fmtBRL(totalFiltrado)}</strong>
+        </div>
+      )}
+
+      {todasDoVeiculo.length === 0 ? (
+        <EmptyState t={t} text="Nenhuma ordem de serviço ainda. Abra uma “Nova OS” para registrar uma manutenção ou um documento (IPVA, licenciamento, seguro, multas…)." />
+      ) : ordens.length === 0 ? (
+        <EmptyState t={t} text="Nenhuma OS encontrada com esses filtros. Ajuste o período ou a busca." />
       ) : (
         <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow, overflowX: "auto" }} className="scrollbar">
           <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse", fontSize: 13 }}>
@@ -6654,6 +6682,111 @@ function ModalVeiculo({ t, db, dado, onClose, onSave }) {
   );
 }
 
+/* PDF da OS — gerado no próprio navegador (jsPDF, carregado só quando usado) e baixado como arquivo */
+async function gerarPdfOS({ os, veiculo, origemNome, origemTipo, categoriaNome, subcategoriaNome, transacoes }) {
+  const [{ jsPDF }, { default: autoTable }] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const W = doc.internal.pageSize.getWidth();
+  const M = 14;
+  const azul = [42, 120, 214], cinza = [92, 91, 86], laranja = [235, 104, 52];
+  const total = totalOS(os);
+  const pg = os.pagamento || {};
+  const parcelas = Math.max(1, Number(pg.parcelas) || 1);
+  const statusLabel = (STATUS_OS[os.status] || STATUS_OS.aberta).label;
+
+  // Cabeçalho
+  doc.setFillColor(...azul); doc.rect(0, 0, W, 24, "F");
+  doc.setTextColor(255); doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+  doc.text(`ORDEM DE SERVIÇO  ${fmtNumeroOS(os.numero)}`, M, 15);
+  doc.setFontSize(10); doc.setFont("helvetica", "normal");
+  doc.text(`${os.tipo === "Documento" ? "Documento" : "Manutenção"} · ${statusLabel}`, W - M, 15, { align: "right" });
+
+  // Dados gerais (2 colunas)
+  doc.setTextColor(0);
+  let y = 34;
+  const campo = (rotulo, valor, x) => {
+    doc.setFontSize(8); doc.setTextColor(...cinza); doc.text(rotulo.toUpperCase(), x, y);
+    doc.setFontSize(10.5); doc.setTextColor(0); doc.text(String(valor || "—"), x, y + 5);
+  };
+  const col2 = W / 2 + 4;
+  campo("Veículo", veiculo ? `${veiculo.nome}${veiculo.ano ? ` · ${veiculo.ano}` : ""}${veiculo.cor ? ` · ${veiculo.cor}` : ""}` : "—", M);
+  campo("Data da OS", dataBR(os.data), col2);
+  y += 13;
+  campo(os.tipo === "Documento" ? "Órgão / fornecedor" : "Oficina / fornecedor", os.oficina, M);
+  campo("Km", os.km ? Number(os.km).toLocaleString("pt-BR") : "—", col2);
+  y += 12;
+
+  // Itens
+  autoTable(doc, {
+    startY: y,
+    margin: { left: M, right: M },
+    head: [["Item", "Descrição", "Qtd", "Preço unit.", "Total"]],
+    body: (os.itens || []).map((i) => [i.item, i.descricao || "", String(i.qtd).replace(".", ","), fmtBRL(i.precoUnit), fmtBRL(totalItemOS(i))]),
+    foot: [[{ content: "TOTAL DA OS", colSpan: 4, styles: { halign: "right" } }, { content: fmtBRL(total), styles: { halign: "right" } }]],
+    theme: "grid",
+    styles: { fontSize: 9.5, cellPadding: 2.4, lineColor: [225, 224, 217], lineWidth: 0.2, textColor: 20 },
+    headStyles: { fillColor: [238, 240, 237], textColor: cinza, fontStyle: "bold", fontSize: 8.5 },
+    footStyles: { fillColor: [252, 252, 251], textColor: laranja, fontStyle: "bold", fontSize: 11 },
+    columnStyles: { 0: { cellWidth: 42 }, 2: { cellWidth: 14, halign: "center" }, 3: { cellWidth: 28, halign: "right" }, 4: { cellWidth: 30, halign: "right", fontStyle: "bold" } }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  // Pagamento
+  const garantirEspaco = (h) => { if (y + h > doc.internal.pageSize.getHeight() - 16) { doc.addPage(); y = 20; } };
+  garantirEspaco(40);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(0); doc.text("Pagamento", M, y); y += 6;
+  doc.setFont("helvetica", "normal");
+  campo("Pago com", origemNome ? `${origemNome} (${origemTipo === "cartao" ? "cartão de crédito" : "conta"})` : "Não definido", M);
+  campo("Condição", parcelas > 1 ? `${parcelas}x de ${fmtBRL(total / parcelas)}` : "À vista", col2);
+  y += 13;
+  campo(parcelas > 1 ? "1º vencimento" : "Vencimento", dataBR(pg.vencimento), M);
+  campo("Categoria", categoriaNome ? `${categoriaNome}${subcategoriaNome ? ` › ${subcategoriaNome}` : ""}` : "—", col2);
+  y += 16;
+
+  if (transacoes && transacoes.length) {
+    autoTable(doc, {
+      startY: y,
+      margin: { left: M, right: M },
+      head: [["Parcela", "Vencimento", "Valor", "Situação"]],
+      body: [...transacoes].sort((a, b) => (a.parcelaAtual || 1) - (b.parcelaAtual || 1)).map((tx) => [
+        tx.parcelaTotal > 1 ? `${tx.parcelaAtual}/${tx.parcelaTotal}` : "Única", dataBR(tx.data), fmtBRL(tx.valor),
+        tx.status === "concluido" ? "Paga" : tx.status === "cancelado" ? "Cancelada" : "Pendente"
+      ]),
+      theme: "grid",
+      styles: { fontSize: 9, cellPadding: 2, lineColor: [225, 224, 217], lineWidth: 0.2, textColor: 20 },
+      headStyles: { fillColor: [238, 240, 237], textColor: cinza, fontStyle: "bold", fontSize: 8.5 },
+      columnStyles: { 2: { halign: "right" } }
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  if (os.observacao) {
+    garantirEspaco(18);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.text("Observações", M, y); y += 5.5;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+    const linhas = doc.splitTextToSize(os.observacao, W - 2 * M);
+    doc.text(linhas, M, y); y += linhas.length * 4.6 + 4;
+  }
+  if (os.anexos && os.anexos.length) {
+    garantirEspaco(10 + os.anexos.length * 5);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.text(`Anexos (${os.anexos.length})`, M, y); y += 5.5;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(...cinza);
+    os.anexos.forEach((a) => { doc.text(`• ${a.nome}`, M, y); y += 4.8; });
+  }
+
+  // Rodapé em todas as páginas
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8); doc.setTextColor(150);
+    doc.text(`Orçamento Familiar · gerado em ${new Date().toLocaleString("pt-BR")}`, M, doc.internal.pageSize.getHeight() - 8);
+    doc.text(`${i}/${n}`, W - M, doc.internal.pageSize.getHeight() - 8, { align: "right" });
+  }
+
+  const nomeVeic = nomeArquivoSeguro(veiculo?.nome || "veiculo").replace(/_+/g, "-").toLowerCase();
+  doc.save(`${fmtNumeroOS(os.numero).replace(" ", "-")}_${nomeVeic}_${os.data || ""}.pdf`);
+}
+
 const novoItemOS = () => ({ id: uid(), item: "", descricao: "", qtd: 1, precoUnit: 0 });
 
 function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximoNumero, onClose, onSalvar, onCancelarOS, onAtualizarAnexos }) {
@@ -6734,6 +6867,26 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
   const numeroExibido = dado ? dado.numero : proximoNumero;
   const sugestoes = SUGESTOES_ITEM_OS[tipo] || [];
   const transacoesGeradas = dado ? (db.transacoes || []).filter((tx) => tx.osId === dado.id) : [];
+  const [gerandoPdf, setGerandoPdf] = useState(false);
+  const exportarPdf = async () => {
+    setGerandoPdf(true);
+    try {
+      await gerarPdfOS({
+        os: { ...montar(), numero: numeroExibido, status: dado?.status || "aberta" },
+        veiculo: (db.veiculos || []).find((v) => v.id === veiculoId),
+        origemNome: origemTipo === "cartao" ? cartoesAtivos.find((c) => c.id === origemId)?.nome || (db.cartoes || []).find((c) => c.id === origemId)?.nome : db.contas.find((c) => c.id === origemId)?.nomeConta,
+        origemTipo,
+        categoriaNome: db.categorias.find((c) => c.id === categoriaId)?.nome,
+        subcategoriaNome: db.subcategorias.find((sc) => sc.id === subcategoriaId)?.nome,
+        transacoes: transacoesGeradas
+      });
+    } catch (err) {
+      console.error("Falha ao gerar PDF da OS:", err);
+      alert("Não foi possível gerar o PDF da OS. Tente novamente.");
+    } finally {
+      setGerandoPdf(false);
+    }
+  };
 
   return (
     <ModalShell t={t} maxWidth={760} title={
@@ -6886,6 +7039,9 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
             </button>
           </>
         )}
+        <button disabled={!podeSalvar || gerandoPdf} onClick={exportarPdf} title="Baixar esta OS em PDF" style={{ ...btnGhost(t), minWidth: 130, padding: "10px 12px", fontWeight: 600, opacity: podeSalvar ? 1 : 0.5 }}>
+          {gerandoPdf ? <Loader2 size={14} className="spin" /> : <Download size={14} />} Exportar PDF
+        </button>
         {dado && dado.status !== "cancelada" && (
           <button onClick={() => setConfirmarCancelar(true)} style={{ ...btnGhost(t), color: t.danger, minWidth: 120 }}><Ban size={14} /> Cancelar OS</button>
         )}
@@ -7645,6 +7801,7 @@ export default function App() {
           .os-item-row .os-cell[data-label="Total"] { text-align: left !important; }
           .os-item-row .os-cell-acao { position: absolute; top: 8px; right: 10px; }
           .os-item-row .os-cell[data-label="Item"] { padding-right: 36px; }
+          .os-filtros input[type=date] { flex: 1 1 120px; width: auto !important; }
         }
         @media print {
           .no-print { display: none !important; }
