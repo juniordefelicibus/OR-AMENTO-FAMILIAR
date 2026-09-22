@@ -6,7 +6,8 @@ import {
   Wallet, Receipt, BarChart3, Lock, Mail, ArrowRight, X, Check, Menu, ShieldCheck,
   LineChart as LineChartIcon, CreditCard, Repeat, CheckCircle2, Ban, ArrowUpCircle,
   ArrowDownCircle, CalendarClock, SlidersHorizontal, ArrowLeftRight, StickyNote, PartyPopper, AlertTriangle, ImagePlus, Bell,
-  FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, SearchX
+  FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, SearchX,
+  Car, Wrench, ClipboardList, Gauge, Paperclip, Image as ImageIcon
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -389,7 +390,7 @@ const INDICES_PADRAO = {
   dolar: { valor: 5.11, dataRef: "2026-07-29" },
   bitcoin: { valor: 331413.24, dataRef: "2026-07-29" }
 };
-const DB_DEFAULTS = { usuarios: [], contas: [], cartoes: [], transacoes: [], categorias: [], subcategorias: [], metas: [], ativos: [], indices: INDICES_PADRAO, metaRendaMensal: 0, vencimentos: [], orcamentos: [], anotacoes: [], auditoria: [], tema: "light", permiteDeletarMovimentacoes: false, metasClasse: {}, brapiToken: "" };
+const DB_DEFAULTS = { usuarios: [], contas: [], cartoes: [], transacoes: [], categorias: [], subcategorias: [], metas: [], ativos: [], indices: INDICES_PADRAO, metaRendaMensal: 0, vencimentos: [], orcamentos: [], anotacoes: [], auditoria: [], veiculos: [], ordensServico: [], tema: "light", permiteDeletarMovimentacoes: false, metasClasse: {}, brapiToken: "" };
 function withDefaults(db) {
   const merged = { ...DB_DEFAULTS, ...db };
   Object.keys(DB_DEFAULTS).forEach((k) => { if (merged[k] === undefined || merged[k] === null) merged[k] = DB_DEFAULTS[k]; });
@@ -544,6 +545,7 @@ const ROUTE_TITLES = {
   relatorios: "Relatórios",
   analista: "Analista Financeiro",
   categorias: "Categorias & Subcategorias",
+  veiculos: "Veículos",
   auditoria: "Auditoria",
   config: "Configurações"
 };
@@ -759,6 +761,7 @@ const NAV = [
   { id: "contas", label: "Contas", icon: Wallet, disabled: false },
   { id: "cartoes", label: "Cartões", icon: CreditCard, disabled: false },
   { id: "categorias", label: "Categorias", icon: Tags, disabled: false },
+  { id: "veiculos", label: "Veículos", icon: Car, disabled: false },
   { id: "auditoria", label: "Auditoria", icon: HistoryIcon, disabled: false },
   { divider: true },
   { id: "transacoes", label: "Transações", icon: Receipt, disabled: false },
@@ -1858,10 +1861,10 @@ function IconBtn({ t, children, onClick, title, danger }) {
 }
 const btnPrimary = (t) => ({ display: "flex", alignItems: "center", gap: 7, background: t.primary, color: t.primaryText, border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13.5, fontWeight: 600 });
 
-function ModalShell({ t, title, onClose, children }) {
+function ModalShell({ t, title, onClose, children, maxWidth = 380 }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(10,14,12,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60, padding: 16 }}>
-      <div className="modal-shell scrollbar" style={{ background: t.surface, borderRadius: 14, width: "100%", maxWidth: 380, maxHeight: "90vh", overflowY: "auto", padding: 22, boxShadow: t.shadow, border: `1px solid ${t.border}` }}>
+      <div className="modal-shell scrollbar" style={{ background: t.surface, borderRadius: 14, width: "100%", maxWidth, maxHeight: "90vh", overflowY: "auto", padding: 22, boxShadow: t.shadow, border: `1px solid ${t.border}` }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <h3 className="display" style={{ fontSize: 16, fontWeight: 600 }}>{title}</h3>
           <button onClick={onClose} style={{ background: "none", border: "none", color: t.textMuted }}><X size={18} /></button>
@@ -2717,9 +2720,11 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                       <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
                         {tx.tipo === "Receita" ? <ArrowUpCircle size={14} color={t.primary} /> : <ArrowDownCircle size={14} color={t.danger} />}
                         <span>{tx.descricao}</span>
+                        {tx.osNumero && <span title="Gerada por uma Ordem de Serviço de veículo" style={{ fontSize: 10.5, fontWeight: 700, color: t.primary, background: `${t.primary}18`, padding: "1px 6px", borderRadius: 5 }}><Wrench size={9} style={{ marginRight: 3, display: "inline" }} />{fmtNumeroOS(tx.osNumero)}</span>}
                         {tx.parcelaTotal > 1 && <span style={{ fontSize: 10.5, color: t.textMuted, background: t.surfaceAlt, padding: "1px 6px", borderRadius: 5 }}><Repeat size={9} style={{ marginRight: 3, display: "inline" }} />{tx.parcelaAtual}/{tx.parcelaTotal}</span>}
                         {tx.ocorrenciaTotal > 1 && <span style={{ fontSize: 10.5, color: t.textMuted, background: t.surfaceAlt, padding: "1px 6px", borderRadius: 5 }}><Repeat size={9} style={{ marginRight: 3, display: "inline" }} />{tx.recorrencia}</span>}
                       </div>
+                      {tx.osNumero && <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 2 }}>OS de {dataBR(tx.osData)} · total {fmtBRL(tx.osTotal)}{tx.parcelaTotal > 1 ? ` em ${tx.parcelaTotal}x de ${fmtBRL(tx.osTotal / tx.parcelaTotal)}` : " à vista"}</div>}
                       {tx.tipo === "Receita" && tx.dataRecebimento && <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 2 }}>Previsão de recebimento: {dataBR(tx.dataRecebimento)}</div>}
                     </td>
                     <td style={{ ...tdStyle(t), padding: "10px 16px", overflowWrap: "anywhere" }}>
@@ -6099,6 +6104,821 @@ function CartaoDetalhe({ t, db, cartao, onVoltar, onEditar, onAlternarStatus, on
 /* ============================================================
    AUDITORIA
    ============================================================ */
+/* ============================================================
+   VEÍCULOS — cadastro de veículos + Ordens de Serviço (manutenção e documentos)
+   Cada OS reúne vários itens (item, descrição, qtd, preço unitário, total). Ao "Lançar despesa", a OS
+   vira despesa(s) em Transações — à vista ou parcelada — na conta/cartão escolhido, com o número da OS
+   gravado na transação (campos osId / osNumero) pra dar pra rastrear de volta.
+   ============================================================ */
+const TIPOS_OS = ["Manutenção", "Documento"];
+const SUGESTOES_ITEM_OS = {
+  "Manutenção": ["Óleo do motor", "Filtro de óleo", "Filtro de ar", "Filtro de combustível", "Filtro de cabine", "Pastilha de freio", "Disco de freio", "Pneu", "Alinhamento", "Balanceamento", "Bateria", "Correia dentada", "Velas", "Amortecedor", "Mão de obra", "Lavagem"],
+  "Documento": ["IPVA", "Licenciamento", "Seguro", "Seguro obrigatório", "Multa", "Transferência", "Vistoria", "Emplacamento", "Despachante"]
+};
+const CORES_VEICULO = {
+  BRANCO: "#F5F5F2", PRETO: "#1B1B1B", PRATA: "#C3C6CA", CINZA: "#7D8187", VERMELHO: "#C8302E", AZUL: "#2A5BB8",
+  VERDE: "#2F7D4F", AMARELO: "#E8C22F", LARANJA: "#E07A2A", MARROM: "#6E4A2F", BEGE: "#D8C7A3", VINHO: "#6D1F2E", DOURADO: "#C9A54B"
+};
+const corVeiculoHex = (nome) => CORES_VEICULO[normalizarNomeCategoria(nome)] || null;
+const fmtNumeroOS = (n) => `OS ${String(n || 0).padStart(4, "0")}`;
+const totalItemOS = (it) => Math.round((Number(it.qtd) || 0) * (Number(it.precoUnit) || 0) * 100) / 100;
+const totalOS = (os) => Math.round((os.itens || []).reduce((s, it) => s + totalItemOS(it), 0) * 100) / 100;
+const STATUS_OS = {
+  aberta: { label: "Aberta", cor: (t) => t.accent },
+  lancada: { label: "Lançada", cor: (t) => t.primary },
+  cancelada: { label: "Cancelada", cor: (t) => t.textMuted }
+};
+
+/* Categoria padrão para despesas de veículo: procura "Transporte", "Veículo", "Carro"… nas categorias de despesa ativas */
+/* Categoria/subcategoria das despesas geradas pelas OS de um veículo:
+   1) o que estiver configurado no próprio veículo (Editar veículo → "Classificação das despesas");
+   2) senão, categoria "Variável" + a subcategoria de manutenção que tenha o nome do veículo
+      (ex.: veículo "FORD FOCUS" → "MANUTENÇÃO FOCUS"; "PEUGEOT 307" → "MANUTENÇÃO PEUGEOT"/"PEUGEOUT" —
+      compara só as 5 primeiras letras de cada palavra do nome, pra tolerar pequenas diferenças de grafia);
+   3) senão, "Variável" sem subcategoria; 4) senão, Transporte/Veículo/Carro. */
+function palavrasNomeVeiculo(nome) {
+  return normalizarNomeCategoria(nome).split(/[^A-Z0-9]+/).filter((p) => p.length >= 3 && !/^\d+$/.test(p));
+}
+function sugerirClassificacaoVeiculo(db, veiculo) {
+  const categoriasDespesa = (db.categorias || []).filter((c) => c.tipo === "Despesa" && c.status === "ativo");
+  const variavel = categoriasDespesa.find((c) => normalizarNomeCategoria(c.nome) === "VARIAVEL");
+  if (!variavel) return { categoriaId: categoriaPadraoVeiculo(db), subcategoriaId: "" };
+  const palavras = palavrasNomeVeiculo(veiculo?.nome);
+  const subs = (db.subcategorias || []).filter((sc) => sc.categoriaId === variavel.id && sc.status === "ativo");
+  const sub = subs.find((sc) => {
+    const n = normalizarNomeCategoria(sc.nome);
+    return n.includes("MANUT") && palavras.some((p) => n.includes(p.slice(0, 5)));
+  });
+  return { categoriaId: variavel.id, subcategoriaId: sub?.id || "" };
+}
+function classificacaoVeiculo(db, veiculo) {
+  const cat = veiculo?.categoriaPadraoId && (db.categorias || []).find((c) => c.id === veiculo.categoriaPadraoId && c.status === "ativo");
+  if (cat) {
+    const sub = veiculo.subcategoriaPadraoId && (db.subcategorias || []).find((sc) => sc.id === veiculo.subcategoriaPadraoId && sc.categoriaId === cat.id && sc.status === "ativo");
+    return { categoriaId: cat.id, subcategoriaId: sub?.id || "" };
+  }
+  return sugerirClassificacaoVeiculo(db, veiculo);
+}
+
+/* ---------- Anexos (nota fiscal em PDF, fotos do orçamento do mecânico) ----------
+   Só armazenamento: os arquivos vão para o Supabase Storage (bucket privado "anexos", pasta do próprio
+   usuário) e a OS guarda apenas nome/tipo/tamanho/caminho. Nada é lido ou extraído dos arquivos.
+   Não vão pro JSON do financas_dados de propósito — base64 de PDF/foto deixaria cada salvamento pesado. */
+const BUCKET_ANEXOS = "anexos";
+const TAMANHO_MAX_ANEXO = 10 * 1024 * 1024; // 10 MB por arquivo
+const nomeArquivoSeguro = (nome) => (nome || "arquivo").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-80);
+const fmtTamanho = (b) => b >= 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+const anexosStorage = {
+  disponivel: () => !!supabase,
+  async enviar(file, pasta) {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("Sessão expirada — entre de novo para anexar arquivos.");
+    const path = `${user.id}/${pasta}/${Date.now()}-${nomeArquivoSeguro(file.name)}`;
+    const { error } = await supabase.storage.from(BUCKET_ANEXOS).upload(path, file, { contentType: file.type || undefined, upsert: false });
+    if (error) throw new Error(/bucket not found/i.test(error.message) ? "O armazenamento de anexos ainda não foi criado no Supabase (rode o bloco de anexos do schema.sql)." : error.message);
+    return { id: uid(), nome: file.name, tipo: file.type || "", tamanho: file.size, path, enviadoEm: nowISO() };
+  },
+  async abrir(anexo) {
+    const janela = window.open("", "_blank"); // abre já no clique (evita bloqueio de pop-up no celular)
+    const { data, error } = await supabase.storage.from(BUCKET_ANEXOS).createSignedUrl(anexo.path, 60 * 10);
+    if (error || !data?.signedUrl) { if (janela) janela.close(); throw new Error(error?.message || "Não foi possível abrir o arquivo."); }
+    if (janela) janela.location.href = data.signedUrl; else window.location.href = data.signedUrl;
+  },
+  async remover(anexos) {
+    const paths = (anexos || []).map((a) => a.path).filter(Boolean);
+    if (paths.length) await supabase.storage.from(BUCKET_ANEXOS).remove(paths);
+  }
+};
+
+function AnexosOS({ t, osId, anexos, onChange }) {
+  const [enviando, setEnviando] = useState(0);
+  const [erro, setErro] = useState("");
+  const [removendoId, setRemovendoId] = useState(null);
+  const inputRef = useRef(null);
+  const disponivel = anexosStorage.disponivel();
+
+  const escolher = async (e) => {
+    const arquivos = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!arquivos.length) return;
+    setErro("");
+    const grandes = arquivos.filter((f) => f.size > TAMANHO_MAX_ANEXO);
+    const validos = arquivos.filter((f) => f.size <= TAMANHO_MAX_ANEXO && (f.type === "application/pdf" || f.type.startsWith("image/") || /\.pdf$/i.test(f.name)));
+    if (grandes.length) setErro(`${grandes.map((f) => f.name).join(", ")}: acima de 10 MB, não enviado.`);
+    if (validos.length < arquivos.length - grandes.length) setErro((x) => `${x ? x + " " : ""}Só PDF ou imagem.`);
+    setEnviando(validos.length);
+    const novos = [];
+    for (const f of validos) {
+      try { novos.push(await anexosStorage.enviar(f, `os/${osId}`)); }
+      catch (err) { setErro(err.message || "Falha ao enviar o arquivo."); }
+      setEnviando((n) => n - 1);
+    }
+    if (novos.length) onChange([...(anexos || []), ...novos], { adicionados: novos });
+  };
+
+  const remover = async (anexo) => {
+    try { await anexosStorage.remover([anexo]); } catch (err) { /* se já não existir no storage, só tira da lista */ }
+    onChange((anexos || []).filter((a) => a.id !== anexo.id), { removidos: [anexo] });
+    setRemovendoId(null);
+  };
+
+  const abrir = async (anexo) => {
+    try { setErro(""); await anexosStorage.abrir(anexo); } catch (err) { setErro(err.message); }
+  };
+
+  return (
+    <div style={{ border: `1px dashed ${t.border}`, borderRadius: 12, padding: 12, marginTop: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+          <Paperclip size={14} /> Nota fiscal e comprovantes {anexos?.length ? `(${anexos.length})` : ""}
+        </div>
+        <input ref={inputRef} type="file" accept="application/pdf,image/*" multiple onChange={escolher} style={{ display: "none" }} />
+        <button type="button" disabled={!disponivel || enviando > 0} onClick={() => inputRef.current?.click()} style={{ ...btnGhost(t), opacity: disponivel ? 1 : 0.5 }}>
+          {enviando > 0 ? <><Loader2 size={14} className="spin" /> Enviando…</> : <><Upload size={14} /> Anexar PDF ou imagem</>}
+        </button>
+      </div>
+      {(!anexos || anexos.length === 0) && enviando === 0 && (
+        <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 6 }}>
+          {disponivel ? "Guarde aqui a nota fiscal (PDF) ou fotos do orçamento/recibo do mecânico. Até 10 MB por arquivo." : "Anexos precisam do Supabase configurado."}
+        </div>
+      )}
+      {anexos?.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 8, marginTop: 10 }}>
+          {anexos.map((a) => {
+            const ehPdf = a.tipo === "application/pdf" || /\.pdf$/i.test(a.nome);
+            return (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${t.border}`, borderRadius: 9, padding: "7px 8px", background: t.surface, minWidth: 0 }}>
+                <button type="button" onClick={() => abrir(a)} title="Abrir" style={{ display: "flex", alignItems: "center", gap: 9, flex: 1, minWidth: 0, background: "none", border: "none", padding: 0, color: t.text, textAlign: "left" }}>
+                  <span style={{ width: 32, height: 32, borderRadius: 7, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: ehPdf ? `${t.danger}18` : `${t.primary}18` }}>
+                    {ehPdf ? <FileText size={16} color={t.danger} /> : <ImageIcon size={16} color={t.primary} />}
+                  </span>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: "block", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.nome}</span>
+                    <span style={{ display: "block", fontSize: 10.5, color: t.textMuted }}>{ehPdf ? "PDF" : "Imagem"} · {fmtTamanho(a.tamanho || 0)}</span>
+                  </span>
+                </button>
+                {removendoId === a.id ? (
+                  <button type="button" onClick={() => remover(a)} style={{ ...btnGhost(t), padding: "5px 8px", fontSize: 11, color: t.danger, borderColor: t.danger }}>Remover?</button>
+                ) : (
+                  <IconBtn t={t} title="Remover anexo" danger onClick={() => setRemovendoId(a.id)}><Trash2 size={12} /></IconBtn>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {erro && <div style={{ fontSize: 11.5, color: t.danger, marginTop: 8 }}>{erro}</div>}
+    </div>
+  );
+}
+
+function categoriaPadraoVeiculo(db) {
+  const candidatas = ["VEICULO", "VEICULOS", "CARRO", "AUTOMOVEL", "TRANSPORTE"];
+  const ativas = (db.categorias || []).filter((c) => c.tipo === "Despesa" && c.status === "ativo");
+  for (const nome of candidatas) {
+    const achou = ativas.find((c) => normalizarNomeCategoria(c.nome) === nome);
+    if (achou) return achou.id;
+  }
+  return "";
+}
+
+/* Monta as transações (despesa à vista ou parcelada) geradas por uma OS */
+function gerarTransacoesOS(os, veiculo) {
+  const pg = os.pagamento || {};
+  const total = totalOS(os);
+  const parcelas = Math.max(1, Number(pg.parcelas) || 1);
+  const grupoId = uid();
+  const valorParcela = Math.round((total / parcelas) * 100) / 100;
+  const base = `${fmtNumeroOS(os.numero)} · ${(veiculo?.nome || "VEÍCULO").toUpperCase()}${os.tipo === "Documento" ? " · DOCUMENTO" : ""}`;
+  let acumulado = 0;
+  const transacoes = Array.from({ length: parcelas }, (_, i) => {
+    const valor = i === parcelas - 1 ? Math.round((total - acumulado) * 100) / 100 : valorParcela;
+    acumulado += valorParcela;
+    const quitadaAgora = i === 0 && pg.jaPaga;
+    return {
+      id: uid(), tipo: "Despesa",
+      descricao: parcelas > 1 ? `${base} (${i + 1}/${parcelas})` : base,
+      valor, data: addMonthsISO(pg.vencimento || os.data, i),
+      origemTipo: pg.origemTipo, origemId: pg.origemId,
+      categoriaId: pg.categoriaId || null, subcategoriaId: pg.subcategoriaId || null,
+      parcelaAtual: i + 1, parcelaTotal: parcelas, grupoParcelamento: grupoId,
+      dataInclusao: null, dataRecebimento: null,
+      status: quitadaAgora ? "concluido" : "pendente",
+      dataBaixa: quitadaAgora ? hojeISO() : null,
+      contaPagamentoId: quitadaAgora && pg.origemTipo === "conta" ? pg.origemId : null,
+      osId: os.id, osNumero: os.numero, osData: os.data, osTotal: total, veiculoId: os.veiculoId
+    };
+  });
+  return { grupoId, transacoes };
+}
+
+const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
+  const [modalVeiculo, setModalVeiculo] = useState(null); // {} novo | {dado} editar
+  const [veiculoAbertoId, setVeiculoAbertoId] = useState(null);
+  const [osAberta, setOsAberta] = useState(null); // { dado } | { novo: true, tipo }
+
+  const veiculos = db.veiculos || [];
+  const ordens = db.ordensServico || [];
+  const veiculoAberto = veiculos.find((v) => v.id === veiculoAbertoId);
+
+  const salvarVeiculo = (dados) => {
+    let next = { ...db };
+    if (dados.id) {
+      next.veiculos = veiculos.map((v) => v.id === dados.id ? { ...v, ...dados } : v);
+      onChange(next, { tipoOperacao: "edição", entidade: "Veículo", entidadeId: dados.id, detalhe: dados.nome });
+    } else {
+      const novo = { ...dados, id: uid(), status: "ativo", criadoEm: nowISO() };
+      next.veiculos = [...veiculos, novo];
+      onChange(next, { tipoOperacao: "criação", entidade: "Veículo", entidadeId: novo.id, detalhe: novo.nome });
+    }
+    setModalVeiculo(null);
+  };
+
+  const alternarStatusVeiculo = (v) => {
+    const novoStatus = v.status === "ativo" ? "inativo" : "ativo";
+    onChange({ ...db, veiculos: veiculos.map((x) => x.id === v.id ? { ...x, status: novoStatus } : x) }, { tipoOperacao: "edição", entidade: "Veículo", entidadeId: v.id, detalhe: `${v.nome} → ${novoStatus}` });
+  };
+
+  /* Salva a OS (rascunho) e, se pedido, já lança as despesas em Transações */
+  const salvarOS = (os, lancar) => {
+    const existente = ordens.find((o) => o.id === os.id);
+    const numero = existente ? existente.numero : ordens.reduce((m, o) => Math.max(m, Number(o.numero) || 0), 0) + 1;
+    let registro = { ...existente, ...os, id: existente?.id || os.id || uid(), numero, criadoEm: existente?.criadoEm || nowISO(), status: existente?.status || "aberta" };
+    let next = { ...db };
+    let detalhe = `${fmtNumeroOS(numero)} — ${fmtBRL(totalOS(registro))}`;
+    if (lancar) {
+      const veiculo = veiculos.find((v) => v.id === registro.veiculoId);
+      const { grupoId, transacoes } = gerarTransacoesOS(registro, veiculo);
+      registro = { ...registro, status: "lancada", grupoTransacoes: grupoId, lancadaEm: nowISO() };
+      next.transacoes = [...(db.transacoes || []), ...transacoes];
+      const parcelas = transacoes.length;
+      detalhe += parcelas > 1 ? ` lançada em ${parcelas}x` : " lançada";
+    }
+    next.ordensServico = existente ? ordens.map((o) => o.id === registro.id ? registro : o) : [...ordens, registro];
+    onChange(next, { tipoOperacao: existente ? "edição" : "criação", entidade: "Ordem de Serviço", entidadeId: registro.id, detalhe });
+    setOsAberta(null);
+  };
+
+  /* Anexos de uma OS já salva são gravados na hora (mesmo em OS lançada/cancelada, que não é mais editável) */
+  const atualizarAnexosOS = (osId, anexos, mudanca) => {
+    const os = ordens.find((o) => o.id === osId);
+    if (!os) return;
+    const next = { ...db, ordensServico: ordens.map((o) => o.id === osId ? { ...o, anexos } : o) };
+    const qtd = mudanca?.adicionados?.length || mudanca?.removidos?.length || 0;
+    onChange(next, { tipoOperacao: "edição", entidade: "Ordem de Serviço", entidadeId: osId, detalhe: `${fmtNumeroOS(os.numero)} — ${mudanca?.adicionados ? `${qtd} anexo(s) incluído(s)` : `${qtd} anexo(s) removido(s)`}` });
+    setOsAberta((cur) => cur?.dado?.id === osId ? { ...cur, dado: { ...cur.dado, anexos } } : cur);
+  };
+
+  /* Cancela a OS: despesas ainda pendentes geradas por ela são canceladas; as já pagas ficam como estão */
+  const cancelarOS = (os) => {
+    const next = {
+      ...db,
+      ordensServico: ordens.map((o) => o.id === os.id ? { ...o, status: "cancelada" } : o),
+      transacoes: (db.transacoes || []).map((tx) => tx.osId === os.id && tx.status === "pendente" ? { ...tx, status: "cancelado" } : tx)
+    };
+    onChange(next, { tipoOperacao: "edição", entidade: "Ordem de Serviço", entidadeId: os.id, detalhe: `${fmtNumeroOS(os.numero)} cancelada` });
+    setOsAberta(null);
+  };
+
+  const resumoVeiculo = (v) => {
+    const doVeiculo = ordens.filter((o) => o.veiculoId === v.id && o.status !== "cancelada");
+    const soma = (tipo) => doVeiculo.filter((o) => o.tipo === tipo && o.status === "lancada").reduce((s, o) => s + totalOS(o), 0);
+    const ultima = [...doVeiculo].sort((a, b) => (b.data || "").localeCompare(a.data || ""))[0];
+    return { manutencao: soma("Manutenção"), documentos: soma("Documento"), abertas: doVeiculo.filter((o) => o.status === "aberta").length, qtd: doVeiculo.length, ultima };
+  };
+
+  const modais = (
+    <>
+      {modalVeiculo && <ModalVeiculo t={t} db={db} dado={modalVeiculo.dado} onClose={() => setModalVeiculo(null)} onSave={salvarVeiculo} />}
+      {osAberta && (
+        <ModalOrdemServico
+          t={t} db={db}
+          dado={osAberta.dado}
+          veiculoIdInicial={osAberta.veiculoId}
+          tipoInicial={osAberta.tipo}
+          proximoNumero={ordens.reduce((m, o) => Math.max(m, Number(o.numero) || 0), 0) + 1}
+          onClose={() => setOsAberta(null)}
+          onSalvar={salvarOS}
+          onCancelarOS={cancelarOS}
+          onAtualizarAnexos={atualizarAnexosOS}
+        />
+      )}
+    </>
+  );
+
+  if (veiculoAberto) {
+    return (
+      <>
+        <VeiculoDetalhe
+          t={t} db={db} veiculo={veiculoAberto} resumo={resumoVeiculo(veiculoAberto)}
+          onVoltar={() => setVeiculoAbertoId(null)}
+          onEditar={() => setModalVeiculo({ dado: veiculoAberto })}
+          onAlternarStatus={() => alternarStatusVeiculo(veiculoAberto)}
+          onNovaOS={(tipo) => setOsAberta({ veiculoId: veiculoAberto.id, tipo })}
+          onAbrirOS={(os) => setOsAberta({ dado: os })}
+        />
+        {modais}
+      </>
+    );
+  }
+
+  const ativos = veiculos.filter((v) => v.status !== "inativo");
+  const anoAtual = String(new Date().getFullYear());
+  const gastoAno = ordens.filter((o) => o.status === "lancada" && (o.data || "").startsWith(anoAtual)).reduce((s, o) => s + totalOS(o), 0);
+  const abertasTotal = ordens.filter((o) => o.status === "aberta").length;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 12.5, color: t.textMuted }}>Gasto com veículos em {anoAtual}</div>
+            <div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>{fmtBRL(gastoAno)}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12.5, color: t.textMuted }}>Veículos ativos</div>
+            <div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>{ativos.length}</div>
+          </div>
+          {abertasTotal > 0 && (
+            <div>
+              <div style={{ fontSize: 12.5, color: t.textMuted }}>OS abertas</div>
+              <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: t.accent }}>{abertasTotal}</div>
+            </div>
+          )}
+        </div>
+        <button onClick={() => setModalVeiculo({})} style={btnPrimary(t)}><Plus size={15} /> Novo Veículo</button>
+      </div>
+
+      {veiculos.length === 0 ? (
+        <EmptyState t={t} text="Nenhum veículo cadastrado ainda. Clique em “Novo Veículo” para começar a controlar manutenções e documentos." />
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+          {veiculos.map((v) => {
+            const r = resumoVeiculo(v);
+            const hex = corVeiculoHex(v.cor);
+            return (
+              <button key={v.id} onClick={() => setVeiculoAbertoId(v.id)} style={{ textAlign: "left", background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 16, boxShadow: t.shadow, opacity: v.status === "inativo" ? 0.55 : 1, color: t.text }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 14 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: t.surfaceAlt, border: `1px solid ${t.border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <Car size={19} color={t.primary} />
+                  </div>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{v.nome}</div>
+                    <div style={{ fontSize: 11.5, color: t.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+                      {v.ano || "—"}{" "}
+                      {v.cor && <>· {hex && <span style={{ width: 9, height: 9, borderRadius: "50%", background: hex, border: `1px solid ${t.border}`, display: "inline-block" }} />}{v.cor}</>}
+                    </div>
+                  </div>
+                  <ChevronRight size={16} color={t.textMuted} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                  <MiniStat t={t} label="Manutenção" valor={fmtBRL(r.manutencao)} />
+                  <MiniStat t={t} label="Documentos" valor={fmtBRL(r.documentos)} />
+                </div>
+                <div style={{ fontSize: 11, color: t.textMuted, paddingTop: 8, borderTop: `1px dashed ${t.border}`, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span>{r.qtd} OS{r.ultima ? ` · última em ${dataBR(r.ultima.data)}` : ""}</span>
+                  {r.abertas > 0 && <span style={{ color: t.accent, fontWeight: 600 }}>{r.abertas} aberta{r.abertas > 1 ? "s" : ""}</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {modais}
+    </div>
+  );
+});
+
+function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternarStatus, onNovaOS, onAbrirOS }) {
+  const [filtroTipo, setFiltroTipo] = useState("todas");
+  const hex = corVeiculoHex(veiculo.cor);
+  const ordens = (db.ordensServico || [])
+    .filter((o) => o.veiculoId === veiculo.id)
+    .filter((o) => filtroTipo === "todas" || o.tipo === filtroTipo)
+    .sort((a, b) => (b.data || "").localeCompare(a.data || "") || (b.numero - a.numero));
+
+  const origemPagamento = (os) => {
+    const pg = os.pagamento || {};
+    if (!pg.origemId) return "—";
+    const nome = pg.origemTipo === "cartao" ? (db.cartoes || []).find((c) => c.id === pg.origemId)?.nome : db.contas.find((c) => c.id === pg.origemId)?.nomeConta;
+    const parc = Number(pg.parcelas) > 1 ? ` · ${pg.parcelas}x` : " · à vista";
+    return `${nome || "—"}${parc}`;
+  };
+
+  return (
+    <div>
+      <button onClick={onVoltar} style={{ ...btnGhost(t), marginBottom: 14 }}><ChevronLeft size={14} /> Veículos</button>
+
+      <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <div style={{ width: 52, height: 52, borderRadius: 12, background: t.surfaceAlt, border: `1px solid ${t.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Car size={24} color={t.primary} />
+          </div>
+          <div style={{ flex: 1, minWidth: 160 }}>
+            <div className="display" style={{ fontSize: 18 }}>{veiculo.nome}</div>
+            <div style={{ fontSize: 12.5, color: t.textMuted, display: "flex", alignItems: "center", gap: 6 }}>
+              Ano {veiculo.ano || "—"}{" "}
+              {veiculo.cor && <>· {hex && <span style={{ width: 10, height: 10, borderRadius: "50%", background: hex, border: `1px solid ${t.border}`, display: "inline-block" }} />}{veiculo.cor}</>}
+              {veiculo.status === "inativo" && <span style={{ color: t.danger, fontWeight: 600 }}>· inativo</span>}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <IconBtn t={t} title="Editar veículo" onClick={onEditar}><Pencil size={13} /></IconBtn>
+            <IconBtn t={t} title={veiculo.status === "ativo" ? "Inativar" : "Reativar"} onClick={onAlternarStatus} danger={veiculo.status === "ativo"}><Power size={13} /></IconBtn>
+          </div>
+        </div>
+        <div className="cards-row" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 12, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${t.border}` }}>
+          <MiniStat t={t} label="Total gasto" valor={fmtBRL(resumo.manutencao + resumo.documentos)} />
+          <MiniStat t={t} label="Manutenção" valor={fmtBRL(resumo.manutencao)} />
+          <MiniStat t={t} label="Documentos" valor={fmtBRL(resumo.documentos)} />
+          <MiniStat t={t} label="OS abertas" valor={resumo.abertas} destaque={resumo.abertas > 0} />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["todas", "Todas"], ["Manutenção", "Manutenção"], ["Documento", "Documentos"]].map(([id, label]) => (
+            <button key={id} onClick={() => setFiltroTipo(id)} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${filtroTipo === id ? t.primary : t.border}`, background: filtroTipo === id ? `${t.primary}18` : "transparent", color: filtroTipo === id ? t.primary : t.text, fontWeight: 600, fontSize: 12 }}>{label}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => onNovaOS("Documento")} style={btnGhost(t)}><FileText size={14} /> Novo documento</button>
+          <button onClick={() => onNovaOS("Manutenção")} style={btnPrimary(t)}><Wrench size={14} /> Nova OS</button>
+        </div>
+      </div>
+
+      {ordens.length === 0 ? (
+        <EmptyState t={t} text="Nenhuma ordem de serviço ainda. Abra uma “Nova OS” para registrar uma manutenção ou “Novo documento” para IPVA, licenciamento, seguro, multas…" />
+      ) : (
+        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow, overflowX: "auto" }} className="scrollbar">
+          <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: t.textMuted }}>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>OS</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Data</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Tipo</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Itens</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Pagamento</th>
+                <th style={{ ...thStyle, padding: "12px 16px", textAlign: "right" }}>Total</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordens.map((os) => {
+                const st = STATUS_OS[os.status] || STATUS_OS.aberta;
+                const itens = os.itens || [];
+                return (
+                  <tr key={os.id} onClick={() => onAbrirOS(os)} style={{ cursor: "pointer", opacity: os.status === "cancelada" ? 0.5 : 1 }}>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", fontWeight: 700 }}>{fmtNumeroOS(os.numero)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px" }}>{dataBR(os.data)}</td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>{os.tipo === "Documento" ? <FileText size={12} color={t.textMuted} /> : <Wrench size={12} color={t.textMuted} />}{os.tipo}</span>
+                    </td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px", color: t.textMuted, maxWidth: 260 }}>
+                      <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{itens.map((i) => i.item).filter(Boolean).join(", ") || "—"}</div>
+                      <div style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>{itens.length} item(ns){os.oficina ? ` · ${os.oficina}` : ""}{os.anexos?.length > 0 && <span title="Anexos" style={{ display: "inline-flex", alignItems: "center", gap: 2, color: t.primary, fontWeight: 700 }}><Paperclip size={11} />{os.anexos.length}</span>}</div>
+                    </td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px", fontSize: 12 }}>{origemPagamento(os)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", textAlign: "right", fontWeight: 700, color: t.danger }}>{fmtBRL(totalOS(os))}</td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: st.cor(t), background: `${st.cor(t)}1A`, padding: "3px 8px", borderRadius: 6 }}>{st.label}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModalVeiculo({ t, db, dado, onClose, onSave }) {
+  const [nome, setNome] = useState(dado?.nome || "");
+  const [ano, setAno] = useState(dado?.ano || "");
+  const [cor, setCor] = useState(dado?.cor || "");
+  // "" = automático (Variável + subcategoria "Manutenção <nome do veículo>")
+  const [categoriaPadraoId, setCategoriaPadraoId] = useState(dado?.categoriaPadraoId || "");
+  const [subcategoriaPadraoId, setSubcategoriaPadraoId] = useState(dado?.subcategoriaPadraoId || "");
+  const categorias = ordenarPorNome((db.categorias || []).filter((c) => c.tipo === "Despesa" && c.status === "ativo"));
+  const subcategorias = ordenarPorNome((db.subcategorias || []).filter((sc) => sc.categoriaId === categoriaPadraoId && sc.status === "ativo"));
+  const sugestao = sugerirClassificacaoVeiculo(db, { nome });
+  const nomeCat = (id) => (db.categorias || []).find((c) => c.id === id)?.nome;
+  const nomeSub = (id) => (db.subcategorias || []).find((sc) => sc.id === id)?.nome;
+  const valido = nome.trim() && String(ano).trim();
+  return (
+    <ModalShell t={t} title={dado ? "Editar Veículo" : "Novo Veículo"} onClose={onClose}>
+      <Field label="Nome do veículo" t={t} icon={<Car size={14} />}>
+        <input value={nome} onChange={(e) => setNome(e.target.value.toUpperCase())} style={{ ...inputStyle(t), textTransform: "uppercase" }} placeholder="EX: HONDA CIVIC, MOTO CG 160…" autoFocus />
+      </Field>
+      <Field label="Ano" t={t} icon={<Calendar size={14} />}>
+        <input inputMode="numeric" value={ano} onChange={(e) => setAno(e.target.value.replace(/[^\d/]/g, "").slice(0, 9))} style={inputStyle(t)} placeholder="EX: 2019 ou 2019/2020" />
+      </Field>
+      <Field label="Cor" t={t} icon={<span style={{ width: 12, height: 12, borderRadius: "50%", background: corVeiculoHex(cor) || "transparent", border: `1px solid ${t.border}`, display: "inline-block" }} />}>
+        <input value={cor} onChange={(e) => setCor(e.target.value.toUpperCase())} style={{ ...inputStyle(t), textTransform: "uppercase" }} placeholder="EX: PRATA" />
+      </Field>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "-4px 0 16px" }}>
+        {Object.entries(CORES_VEICULO).slice(0, 8).map(([nomeCor, hex]) => (
+          <button key={nomeCor} type="button" onClick={() => setCor(nomeCor)} title={nomeCor} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 8px", borderRadius: 7, border: `1px solid ${normalizarNomeCategoria(cor) === nomeCor ? t.primary : t.border}`, background: "transparent", color: t.text, fontSize: 10.5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: hex, border: `1px solid ${t.border}` }} />{nomeCor.charAt(0) + nomeCor.slice(1).toLowerCase()}
+          </button>
+        ))}
+      </div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, margin: "4px 0 8px" }}>Classificação das despesas deste veículo</div>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8 }}>
+        <Field label="Categoria" t={t} icon={<Tags size={14} />}>
+          <select value={categoriaPadraoId} onChange={(e) => { setCategoriaPadraoId(e.target.value); setSubcategoriaPadraoId(""); }} style={selectStyle(t)}>
+            <option value="">Automático</option>
+            {categorias.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+        </Field>
+        <Field label="Subcategoria" t={t} icon={<Tags size={14} />}>
+          <select value={subcategoriaPadraoId} onChange={(e) => setSubcategoriaPadraoId(e.target.value)} disabled={!categoriaPadraoId} style={{ ...selectStyle(t), opacity: categoriaPadraoId ? 1 : 0.5 }}>
+            <option value="">{categoriaPadraoId ? "Sem subcategoria" : "Automático"}</option>
+            {subcategorias.map((sc) => <option key={sc.id} value={sc.id}>{sc.nome}</option>)}
+          </select>
+        </Field>
+      </div>
+      {!categoriaPadraoId && (
+        <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 14px", lineHeight: 1.5 }}>
+          {nomeCat(sugestao.categoriaId)
+            ? <>Automático: <strong>{nomeCat(sugestao.categoriaId)}</strong>{sugestao.subcategoriaId ? <> › <strong>{nomeSub(sugestao.subcategoriaId)}</strong></> : <> — nenhuma subcategoria “Manutenção {palavrasNomeVeiculo(nome).slice(-1)[0] || "…"}” encontrada em {nomeCat(sugestao.categoriaId)}</>}</>
+            : "Automático: crie a categoria “Variável” com a subcategoria “Manutenção <veículo>”, ou escolha acima."}
+        </p>
+      )}
+      <button disabled={!valido} onClick={() => onSave({ id: dado?.id, nome: nome.trim(), ano: String(ano).trim(), cor: cor.trim(), categoriaPadraoId: categoriaPadraoId || null, subcategoriaPadraoId: categoriaPadraoId ? (subcategoriaPadraoId || null) : null })} style={{ ...btnPrimary(t), width: "100%", justifyContent: "center", opacity: valido ? 1 : 0.6 }}>
+        <Check size={15} /> Salvar
+      </button>
+    </ModalShell>
+  );
+}
+
+const novoItemOS = () => ({ id: uid(), item: "", descricao: "", qtd: 1, precoUnit: 0 });
+
+function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximoNumero, onClose, onSalvar, onCancelarOS, onAtualizarAnexos }) {
+  const somenteLeitura = dado && dado.status !== "aberta";
+  const [osId] = useState(() => dado?.id || uid()); // id já reservado pra OS nova, usado na pasta dos anexos
+  const [anexos, setAnexos] = useState(dado?.anexos || []);
+  const anexosNovosNaoSalvos = useRef([]); // OS nova: arquivos enviados que precisam ser apagados se ela for descartada
+  const pg0 = dado?.pagamento || {};
+  const [veiculoId, setVeiculoId] = useState(dado?.veiculoId || veiculoIdInicial || "");
+  const [tipo, setTipo] = useState(dado?.tipo || tipoInicial || "Manutenção");
+  const [data, setData] = useState(dado?.data || hojeISO());
+  const [km, setKm] = useState(dado?.km || "");
+  const [oficina, setOficina] = useState(dado?.oficina || "");
+  const [observacao, setObservacao] = useState(dado?.observacao || "");
+  const [itens, setItens] = useState(dado?.itens?.length ? dado.itens : [novoItemOS()]);
+  const [origem, setOrigem] = useState(pg0.origemId ? `${pg0.origemTipo}:${pg0.origemId}` : "");
+  const [parcelas, setParcelas] = useState(pg0.parcelas || 1);
+  const [vencimento, setVencimento] = useState(pg0.vencimento || hojeISO());
+  const classifInicial = dado ? null : classificacaoVeiculo(db, (db.veiculos || []).find((v) => v.id === (veiculoIdInicial || "")));
+  const [categoriaId, setCategoriaId] = useState(dado ? (pg0.categoriaId || "") : classifInicial.categoriaId);
+  const [subcategoriaId, setSubcategoriaId] = useState(dado ? (pg0.subcategoriaId || "") : classifInicial.subcategoriaId);
+  // OS nova: ao trocar o veículo, reaplica a classificação padrão dele (Variável › Manutenção <veículo>)
+  const trocarVeiculo = (id) => {
+    setVeiculoId(id);
+    if (!dado) {
+      const c = classificacaoVeiculo(db, (db.veiculos || []).find((v) => v.id === id));
+      setCategoriaId(c.categoriaId); setSubcategoriaId(c.subcategoriaId);
+    }
+  };
+  const mudarAnexos = (lista, mudanca) => {
+    setAnexos(lista);
+    if (dado) { onAtualizarAnexos(dado.id, lista, mudanca); return; }
+    if (mudanca?.adicionados) anexosNovosNaoSalvos.current.push(...mudanca.adicionados);
+    if (mudanca?.removidos) anexosNovosNaoSalvos.current = anexosNovosNaoSalvos.current.filter((a) => !mudanca.removidos.some((r) => r.id === a.id));
+  };
+  const fechar = () => {
+    if (!dado && anexosNovosNaoSalvos.current.length) anexosStorage.remover(anexosNovosNaoSalvos.current).catch(() => {});
+    onClose();
+  };
+  const [jaPaga, setJaPaga] = useState(!!pg0.jaPaga);
+  const [confirmarCancelar, setConfirmarCancelar] = useState(false);
+
+  const veiculosAtivos = (db.veiculos || []).filter((v) => v.status === "ativo" || v.id === veiculoId);
+  const contasAtivas = db.contas.filter((c) => c.status === "ativo");
+  const cartoesAtivos = (db.cartoes || []).filter((c) => c.status === "ativo");
+  const categorias = ordenarPorNome(db.categorias.filter((c) => c.tipo === "Despesa" && c.status === "ativo"));
+  const subcategorias = ordenarPorNome(db.subcategorias.filter((s) => s.categoriaId === categoriaId && s.status === "ativo"));
+  const [origemTipo, origemId] = origem ? origem.split(":") : ["", ""];
+
+  const total = totalOS({ itens });
+  const nParcelas = Math.max(1, Number(parcelas) || 1);
+  const itensValidos = itens.filter((i) => i.item.trim() && totalItemOS(i) > 0);
+  const podeSalvar = veiculoId && data && itensValidos.length > 0;
+  const podeLancar = podeSalvar && origemTipo && vencimento && total > 0;
+
+  const atualizarItem = (id, campo, valor) => setItens((arr) => arr.map((i) => i.id === id ? { ...i, [campo]: valor } : i));
+  const removerItem = (id) => setItens((arr) => arr.length > 1 ? arr.filter((i) => i.id !== id) : [novoItemOS()]);
+
+  const escolherOrigem = (valor) => {
+    setOrigem(valor);
+    const [tp, id] = valor.split(":");
+    if (tp === "cartao") {
+      const cartao = cartoesAtivos.find((c) => c.id === id);
+      const venc = cartao ? proximaDataDoMes(cartao.diaVencimento) : null;
+      if (venc) setVencimento(venc);
+      setJaPaga(false);
+    } else if (tp === "conta") {
+      setVencimento(data);
+    }
+  };
+
+  const montar = () => ({
+    id: osId, veiculoId, tipo, data, km, anexos, oficina: oficina.trim(), observacao: observacao.trim(),
+    itens: itensValidos.map((i) => ({ ...i, item: i.item.trim(), descricao: i.descricao.trim(), qtd: Number(i.qtd) || 0, precoUnit: Number(i.precoUnit) || 0 })),
+    pagamento: { origemTipo, origemId, parcelas: nParcelas, vencimento, categoriaId: categoriaId || null, subcategoriaId: subcategoriaId || null, jaPaga: origemTipo === "conta" && jaPaga }
+  });
+
+  const numeroExibido = dado ? dado.numero : proximoNumero;
+  const sugestoes = SUGESTOES_ITEM_OS[tipo] || [];
+  const transacoesGeradas = dado ? (db.transacoes || []).filter((tx) => tx.osId === dado.id) : [];
+
+  return (
+    <ModalShell t={t} maxWidth={760} title={
+      <span style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span className="mono">{fmtNumeroOS(numeroExibido)}</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: t.textMuted }}>{dado ? "Ordem de serviço" : "Nova ordem de serviço"}</span>
+        {dado && <span style={{ fontSize: 11, fontWeight: 700, color: STATUS_OS[dado.status].cor(t), background: `${STATUS_OS[dado.status].cor(t)}1A`, padding: "2px 8px", borderRadius: 6 }}>{STATUS_OS[dado.status].label}</span>}
+      </span>
+    } onClose={fechar}>
+      <fieldset disabled={somenteLeitura} style={{ border: "none", padding: 0, margin: 0, minWidth: 0 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+          {TIPOS_OS.map((op) => (
+            <button key={op} type="button" onClick={() => setTipo(op)} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 0", borderRadius: 9, border: `1px solid ${tipo === op ? t.primary : t.border}`, background: tipo === op ? `${t.primary}18` : "transparent", color: tipo === op ? t.primary : t.text, fontWeight: 600, fontSize: 13 }}>
+              {op === "Documento" ? <FileText size={14} /> : <Wrench size={14} />}{op === "Documento" ? "Documento" : "Manutenção"}
+            </button>
+          ))}
+        </div>
+
+        <div className="os-grid-cab" style={{ display: "grid", gridTemplateColumns: "minmax(0,1.4fr) minmax(0,1fr) minmax(0,0.8fr)", gap: 10 }}>
+          <Field label="Veículo" t={t} icon={<Car size={14} />}>
+            <select value={veiculoId} onChange={(e) => trocarVeiculo(e.target.value)} style={selectStyle(t)}>
+              <option value="">Selecione</option>
+              {veiculosAtivos.map((v) => <option key={v.id} value={v.id}>{v.nome}{v.ano ? ` (${v.ano})` : ""}</option>)}
+            </select>
+          </Field>
+          <Field label="Data da OS" t={t} icon={<Calendar size={14} />}>
+            <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={inputStyle(t)} />
+          </Field>
+          <Field label={tipo === "Documento" ? "Km (opcional)" : "Km atual"} t={t} icon={<Gauge size={14} />}>
+            <input inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value.replace(/\D/g, ""))} style={inputStyle(t)} placeholder="0" />
+          </Field>
+        </div>
+        <Field label={tipo === "Documento" ? "Órgão / fornecedor (opcional)" : "Oficina / fornecedor (opcional)"} t={t} icon={<Wrench size={14} />}>
+          <input value={oficina} onChange={(e) => setOficina(e.target.value.toUpperCase())} style={{ ...inputStyle(t), textTransform: "uppercase" }} placeholder={tipo === "Documento" ? "EX: DETRAN-SP, SEGURADORA…" : "EX: AUTO CENTER SILVA"} />
+        </Field>
+
+        {/* ---------- ITENS ---------- */}
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, margin: "6px 0 8px", display: "flex", alignItems: "center", gap: 6 }}><ClipboardList size={14} /> Itens da OS</div>
+        <div style={{ border: `1px solid ${t.border}`, borderRadius: 10, overflow: "hidden" }}>
+          <div className="os-item-row os-item-head" style={{ background: t.surfaceAlt, color: t.textMuted, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>
+            <div>Item</div><div>Descrição</div><div style={{ textAlign: "center" }}>Qtd</div><div style={{ textAlign: "right" }}>Preço unit.</div><div style={{ textAlign: "right" }}>Total</div><div />
+          </div>
+          {itens.map((it, idx) => (
+            <div key={it.id} className="os-item-row" style={{ borderTop: idx === 0 ? "none" : `1px solid ${t.border}` }}>
+              <div className="os-cell" data-label="Item">
+                <input list={`sug-os-${tipo}`} value={it.item} onChange={(e) => atualizarItem(it.id, "item", e.target.value)} placeholder="Ex: Óleo do motor" style={celInput(t)} />
+              </div>
+              <div className="os-cell" data-label="Descrição">
+                <input value={it.descricao} onChange={(e) => atualizarItem(it.id, "descricao", e.target.value)} placeholder="Marca, especificação…" style={celInput(t)} />
+              </div>
+              <div className="os-cell" data-label="Qtd">
+                <input inputMode="decimal" value={it.qtd} onChange={(e) => atualizarItem(it.id, "qtd", e.target.value.replace(",", ".").replace(/[^\d.]/g, ""))} style={{ ...celInput(t), textAlign: "center" }} />
+              </div>
+              <div className="os-cell" data-label="Preço unit.">
+                <CelMoeda t={t} valor={it.precoUnit} onChange={(v) => atualizarItem(it.id, "precoUnit", v)} />
+              </div>
+              <div className="os-cell mono" data-label="Total" style={{ textAlign: "right", fontWeight: 700, fontSize: 13, paddingRight: 4 }}>{fmtBRL(totalItemOS(it))}</div>
+              <div className="os-cell os-cell-acao">
+                {!somenteLeitura && <IconBtn t={t} title="Remover item" danger onClick={() => removerItem(it.id)}><Trash2 size={12} /></IconBtn>}
+              </div>
+            </div>
+          ))}
+          <datalist id={`sug-os-${tipo}`}>{sugestoes.map((s) => <option key={s} value={s} />)}</datalist>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderTop: `1px solid ${t.border}`, background: t.surfaceAlt, gap: 10, flexWrap: "wrap" }}>
+            {!somenteLeitura ? (
+              <button type="button" onClick={() => setItens((arr) => [...arr, novoItemOS()])} style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", color: t.primary, fontSize: 12.5, fontWeight: 700, padding: 0 }}>
+                <Plus size={14} /> Adicionar item
+              </button>
+            ) : <span />}
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+              <span style={{ fontSize: 12, color: t.textMuted, fontWeight: 600 }}>TOTAL DA OS</span>
+              <span className="mono" style={{ fontSize: 20, fontWeight: 800, color: t.danger }}>{fmtBRL(total)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ height: 12 }} />
+        <Field label="Observações (opcional)" t={t} icon={<StickyNote size={14} />}>
+          <input value={observacao} onChange={(e) => setObservacao(e.target.value)} style={inputStyle(t)} placeholder="Ex: próxima troca com 10.000 km" />
+        </Field>
+        <div style={{ height: 4 }} />
+
+        {/* ---------- PAGAMENTO ---------- */}
+        <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: "14px 14px 2px", marginTop: 4 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}><Wallet size={14} /> Pagamento</div>
+          <div className="os-grid-pg" style={{ display: "grid", gridTemplateColumns: "minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,1fr)", gap: 10 }}>
+            <Field label="Pagar com" t={t} icon={origemTipo === "cartao" ? <CreditCard size={14} /> : <Wallet size={14} />}>
+              <select value={origem} onChange={(e) => escolherOrigem(e.target.value)} style={selectStyle(t)}>
+                <option value="">Selecione conta ou cartão</option>
+                {contasAtivas.length > 0 && <optgroup label="Contas">{contasAtivas.map((c) => <option key={c.id} value={`conta:${c.id}`}>{c.nomeConta}</option>)}</optgroup>}
+                {cartoesAtivos.length > 0 && <optgroup label="Cartões de crédito">{cartoesAtivos.map((c) => <option key={c.id} value={`cartao:${c.id}`}>{c.nome}</option>)}</optgroup>}
+              </select>
+            </Field>
+            <Field label="Parcelas" t={t} icon={<Repeat size={14} />}>
+              <input type="number" min="1" max="36" value={parcelas} onChange={(e) => setParcelas(e.target.value)} style={inputStyle(t)} />
+            </Field>
+            <Field label={nParcelas > 1 ? "1º vencimento" : "Vencimento"} t={t} icon={<CalendarClock size={14} />}>
+              <input type="date" value={vencimento} onChange={(e) => setVencimento(e.target.value)} style={inputStyle(t)} />
+            </Field>
+          </div>
+          <div className="os-grid-pg2" style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10 }}>
+            <Field label="Categoria" t={t} icon={<Tags size={14} />}>
+              <select value={categoriaId || ""} onChange={(e) => { setCategoriaId(e.target.value); setSubcategoriaId(""); }} style={selectStyle(t)}>
+                <option value="">Sem categoria</option>
+                {categorias.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+            </Field>
+            <Field label="Subcategoria" t={t} icon={<Tags size={14} />}>
+              <select value={subcategoriaId} onChange={(e) => setSubcategoriaId(e.target.value)} disabled={!categoriaId} style={{ ...selectStyle(t), opacity: categoriaId ? 1 : 0.5 }}>
+                <option value="">{categoriaId ? "Sem subcategoria" : "Selecione a categoria"}</option>
+                {subcategorias.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+            <span style={{ fontSize: 12.5, color: t.text }}>
+              {total > 0 ? (nParcelas > 1 ? <>Vai gerar <strong>{nParcelas} despesas</strong> de <strong className="mono">{fmtBRL(total / nParcelas)}</strong> em Transações</> : <>Vai gerar <strong>1 despesa</strong> de <strong className="mono">{fmtBRL(total)}</strong> em Transações</>) : <span style={{ color: t.textMuted }}>Adicione itens para calcular o total.</span>}
+            </span>
+            {origemTipo === "conta" && (
+              <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                <input type="checkbox" checked={jaPaga} onChange={(e) => setJaPaga(e.target.checked)} /> {nParcelas > 1 ? "1ª parcela já paga" : "Já foi paga"}
+              </label>
+            )}
+          </div>
+        </div>
+      </fieldset>
+
+      <AnexosOS t={t} osId={osId} anexos={anexos} onChange={mudarAnexos} />
+
+      {somenteLeitura && transacoesGeradas.length > 0 && (
+        <div style={{ marginTop: 14, fontSize: 12, color: t.textMuted }}>
+          <div style={{ fontWeight: 700, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}><Receipt size={13} /> Despesas geradas em Transações</div>
+          {transacoesGeradas.map((tx) => (
+            <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "5px 0", borderBottom: `1px dashed ${t.border}` }}>
+              <span>{tx.parcelaTotal > 1 ? `Parcela ${tx.parcelaAtual}/${tx.parcelaTotal}` : "À vista"} · venc. {dataBR(tx.data)}</span>
+              <span className="mono" style={{ color: tx.status === "cancelado" ? t.textMuted : t.text, textDecoration: tx.status === "cancelado" ? "line-through" : "none" }}>{fmtBRL(tx.valor)} · {tx.status === "concluido" ? "paga" : tx.status === "cancelado" ? "cancelada" : "pendente"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap" }}>
+        {!somenteLeitura && (
+          <>
+            <button disabled={!podeSalvar} onClick={() => onSalvar(montar(), false)} style={{ ...btnGhost(t), flex: 1, minWidth: 150, padding: "10px 12px", fontWeight: 600, opacity: podeSalvar ? 1 : 0.5 }}>
+              <Check size={14} /> Salvar OS (aberta)
+            </button>
+            <button disabled={!podeLancar} onClick={() => onSalvar(montar(), true)} style={{ ...btnPrimary(t), flex: 1.4, minWidth: 190, justifyContent: "center", opacity: podeLancar ? 1 : 0.5 }}>
+              <Receipt size={15} /> Lançar despesa {total > 0 ? fmtBRL(total) : ""}
+            </button>
+          </>
+        )}
+        {dado && dado.status !== "cancelada" && (
+          <button onClick={() => setConfirmarCancelar(true)} style={{ ...btnGhost(t), color: t.danger, minWidth: 120 }}><Ban size={14} /> Cancelar OS</button>
+        )}
+      </div>
+      {!somenteLeitura && !podeLancar && podeSalvar && <p style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>Escolha a conta ou cartão de pagamento para lançar a despesa. Enquanto isso, dá pra salvar a OS como aberta.</p>}
+
+      {confirmarCancelar && (
+        <ModalShell t={t} title={`Cancelar ${fmtNumeroOS(dado.numero)}?`} onClose={() => setConfirmarCancelar(false)}>
+          <p style={{ fontSize: 13, marginBottom: 16 }}>
+            {dado.status === "lancada" ? "As despesas ainda pendentes geradas por esta OS serão canceladas em Transações. Parcelas já pagas continuam registradas." : "A OS ficará marcada como cancelada e não entra nos totais do veículo."}
+          </p>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setConfirmarCancelar(false)} style={{ ...btnGhost(t), flex: 1 }}>Voltar</button>
+            <button onClick={() => onCancelarOS(dado)} style={{ ...btnPrimary(t), flex: 1, justifyContent: "center", background: t.danger }}><Ban size={14} /> Cancelar OS</button>
+          </div>
+        </ModalShell>
+      )}
+    </ModalShell>
+  );
+}
+
+const celInput = (t) => ({ width: "100%", minWidth: 0, border: `1px solid ${t.border}`, borderRadius: 7, padding: "7px 8px", background: t.surface, color: t.text, fontSize: 12.5, outline: "none" });
+
+function CelMoeda({ t, valor, onChange }) {
+  const centavos = Math.round((Number(valor) || 0) * 100);
+  const display = (centavos / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const handle = (e) => {
+    const digits = e.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+    onChange(digits === "" ? 0 : parseInt(digits, 10) / 100);
+  };
+  return <input inputMode="numeric" value={display} onChange={handle} style={{ ...celInput(t), textAlign: "right" }} className="mono" />;
+}
+
 const AuditoriaView = React.memo(function AuditoriaView({ t, db }) {
   return (
     <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
@@ -6814,6 +7634,18 @@ export default function App() {
         @media (max-width: 480px) {
           .modal-shell { max-width: 100% !important; }
         }
+        .os-item-row { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(0,1.6fr) 58px 112px 104px 34px; gap: 8px; align-items: center; padding: 8px 10px; }
+        @media (max-width: 640px) {
+          .os-grid-cab, .os-grid-pg, .os-grid-pg2 { grid-template-columns: 1fr 1fr !important; }
+          .os-grid-cab > :first-child, .os-grid-pg > :first-child { grid-column: 1 / -1; }
+          .os-item-head { display: none !important; }
+          .os-item-row { grid-template-columns: 1fr 1fr; row-gap: 6px; position: relative; padding: 10px 10px 10px; }
+          .os-item-row .os-cell[data-label="Item"], .os-item-row .os-cell[data-label="Descrição"] { grid-column: 1 / -1; }
+          .os-item-row .os-cell[data-label]::before { content: attr(data-label); display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; opacity: .6; margin-bottom: 3px; }
+          .os-item-row .os-cell[data-label="Total"] { text-align: left !important; }
+          .os-item-row .os-cell-acao { position: absolute; top: 8px; right: 10px; }
+          .os-item-row .os-cell[data-label="Item"] { padding-right: 36px; }
+        }
         @media print {
           .no-print { display: none !important; }
           .sidebar-desktop, .sidebar-mobile-overlay, header { display: none !important; }
@@ -6932,6 +7764,12 @@ export default function App() {
           )}
           {route === "categorias" && (
             <CategoriasView
+              t={t} db={db}
+              onChange={persistComAuditoria}
+            />
+          )}
+          {route === "veiculos" && (
+            <VeiculosView
               t={t} db={db}
               onChange={persistComAuditoria}
             />
