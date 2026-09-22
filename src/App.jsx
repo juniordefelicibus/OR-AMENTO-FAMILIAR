@@ -88,14 +88,57 @@ function despesasCartao(cartao, transacoes) {
 /* Valor planejado de uma categoria num mês/ano específico.
    Planejamento Fixo repete o mesmo valor todo mês. Planejamento Variável usa o valor daquele mês em
    valoresPorMes; se aquele mês não tiver valor definido, cai no valorPlanejado (padrão/base) como fallback. */
-function planejadoNoMes(orcamento, ano, mes) {
+function planejadoNoMes(orcamento, ano, mes, receitaMes) {
   if (!orcamento) return 0;
+  // Orçamento em % da receita: planejado = % do mês × receita do mês
+  if (orcamento.unidade === "percentual") {
+    const pct = pctNoMes(orcamento, ano, mes);
+    return pct != null && receitaMes > 0 ? receitaMes * (pct / 100) : 0;
+  }
   if (orcamento.modo === "variavel") {
     const chave = `${ano}-${String(mes + 1).padStart(2, "0")}`;
     const doMes = orcamento.valoresPorMes ? orcamento.valoresPorMes[chave] : undefined;
     return doMes !== undefined ? (Number(doMes) || 0) : (Number(orcamento.valorPlanejado) || 0);
   }
   return Number(orcamento.valorPlanejado) || 0;
+}
+/* % definido num orçamento percentual pra um mês. Fixo = mesmo % todo mês; Variável = % do mês em
+   pctPorMes, caindo no pctPlanejado quando aquele mês não tiver % próprio. */
+function pctNoMes(orcamento, ano, mes) {
+  if (!orcamento || orcamento.unidade !== "percentual") return null;
+  if (orcamento.modo === "variavel") {
+    const chave = `${ano}-${String(mes + 1).padStart(2, "0")}`;
+    const doMes = orcamento.pctPorMes ? orcamento.pctPorMes[chave] : undefined;
+    if (doMes !== undefined && doMes !== null && doMes !== "") return Number(doMes) || 0;
+  }
+  const base = orcamento.pctPlanejado;
+  return base !== undefined && base !== null && base !== "" ? (Number(base) || 0) : null;
+}
+/* Receita do mês — mesmo filtro do Dashboard (ignora canceladas e o lançamento de pagamento de fatura) */
+function receitaDoMes(transacoes, ano, mes, ignorarId) {
+  return (transacoes || [])
+    .filter((tx) => tx.id !== ignorarId && tx.tipo === "Receita" && tx.status !== "cancelado" && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura) && tx.data)
+    .filter((tx) => { const [y, m] = tx.data.split("-").map(Number); return y === ano && (m - 1) === mes; })
+    .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
+}
+/* Meta efetiva de uma categoria num mês — fonte ÚNICA usada pelo Planejamento, banner Meta x Atual,
+   card Realizado vs Planejado, alerta da Nova Transação e gráfico do Analista:
+   1) meta % definida na aba Planejamento
+   2) sem isso, meta padrão 50/30/10/10 pra categorias Fixo/Variável/Lazer/Investimentos
+   3) sem isso, valor antigo em R$ (orçamentos cadastrados antes da mudança pra %)
+   Retorna { pct, origem: "definida"|"padrao"|"valor", planejado } ou null. */
+function metaEfetivaCategoria(db, categoriaId, ano, mes, receitaMes) {
+  const orc = (db.orcamentos || []).find((o) => o.categoriaId === categoriaId && o.status === "ativo");
+  const pctDefinido = pctNoMes(orc, ano, mes);
+  if (pctDefinido != null) return { pct: pctDefinido, origem: "definida", planejado: receitaMes > 0 ? receitaMes * (pctDefinido / 100) : 0 };
+  const cat = (db.categorias || []).find((c) => c.id === categoriaId);
+  const pctPadrao = cat ? METAS_IDEAIS_CATEGORIA[normalizarNomeCategoria(cat.nome)] : undefined;
+  if (pctPadrao != null) return { pct: pctPadrao, origem: "padrao", planejado: receitaMes > 0 ? receitaMes * (pctPadrao / 100) : 0 };
+  if (orc) {
+    const valor = planejadoNoMes(orc, ano, mes, receitaMes);
+    if (valor > 0) return { pct: receitaMes > 0 ? (valor / receitaMes) * 100 : null, origem: "valor", planejado: valor };
+  }
+  return null;
 }
 /* Janela (início excl., fim incl.) da fatura atualmente em aberto, com base no dia de fechamento do cartão.
    Sem dia de fechamento cadastrado, retorna null — nesse caso não dá pra segmentar por ciclo. */
@@ -884,12 +927,8 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     .filter((tx) => tx.tipo === "Despesa" && tx.categoriaId === categoriaId)
     .filter((tx) => { if (!tx.data) return false; const [y, m] = tx.data.split("-").map(Number); return y === anoSel && (m - 1) === mesSel; })
     .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
-  const planejadoCategoria = (categoriaId) => {
-    const o = (db.orcamentos || []).find((x) => x.categoriaId === categoriaId && x.status === "ativo");
-    return planejadoNoMes(o, anoSel, mesSel);
-  };
-
   const receitasMes = somaMes("Receita", anoSel, mesSel);
+  const planejadoCategoria = (categoriaId) => metaEfetivaCategoria(db, categoriaId, anoSel, mesSel, receitasMes)?.planejado || 0;
   const despesasMes = somaMes("Despesa", anoSel, mesSel);
   const saldoAtual = receitasMes - despesasMes;
 
@@ -915,8 +954,10 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
   const ORDEM_CLASSES_ALERTA = ["FIXO", "VARIAVEL", "LAZER", "INVESTIMENTOS"];
   const LABEL_CLASSES_ALERTA = { FIXO: "FIXO", VARIAVEL: "VARIÁVEL", LAZER: "LAZER", INVESTIMENTOS: "INVESTIMENTOS" };
   const alertasOrcamento = ORDEM_CLASSES_ALERTA.map((chave) => {
-    const metaPct = METAS_IDEAIS_CATEGORIA[chave] ?? 0;
     const cat = categoriasDespesa.find((c) => normalizarNomeCategoria(c.nome) === chave);
+    // Meta % vem da aba Planejamento; sem % definido lá, usa o padrão 50/30/10/10
+    const metaDef = cat ? metaEfetivaCategoria(db, cat.id, anoSel, mesSel, receitasMes) : null;
+    const metaPct = metaDef && metaDef.origem !== "valor" ? metaDef.pct : (METAS_IDEAIS_CATEGORIA[chave] ?? 0);
     if (!cat) return { classe: chave, categoria: LABEL_CLASSES_ALERTA[chave], cor: null, metaPct, atualPct: 0, realizado: 0, idealValor: 0, status: "nao-cadastrada" };
     const realizado = realizadoCategoriaMes(cat.id);
     if (receitasMes <= 0) return { classe: chave, categoria: cat.nome, cor: cat.cor, metaPct, atualPct: 0, realizado, idealValor: 0, status: "sem-receita" };
@@ -1040,7 +1081,6 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
     { label: "Receitas do Mês", valor: receitasMes, icon: TrendingUp, tone: t.primary },
     { label: "Despesas do Mês", valor: despesasMes, icon: TrendingDown, tone: t.danger },
     { label: "Saldo Total das Contas", valor: patrimonioLiquido, icon: Landmark, tone: t.primary },
-    { label: "Reserva de Emergência", valor: reservaEmergencia, icon: ShieldCheck, tone: t.accent },
     { label: "Patrimônio Investido", valor: patrimonioInvestido, icon: LineChartIcon, tone: t.primary }
   ];
 
@@ -1120,7 +1160,10 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
 
       {modalTransferencia && <ModalTransferencia t={t} db={db} onClose={() => setModalTransferencia(false)} onConfirmar={confirmarTransferencia} />}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 18 }}>
+      <style>{`.cards-resumo{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px}
+        @media (max-width:1100px){.cards-resumo{grid-template-columns:repeat(3,minmax(0,1fr))}}
+        @media (max-width:640px){.cards-resumo{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.cards-resumo>:last-child{grid-column:1/-1}.cards-resumo>div{padding:13px 14px!important}.cards-resumo .mono{font-size:17px!important}}`}</style>
+      <div className="cards-resumo">
         {cards.map((c) => (
           <div key={c.label} style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -1153,25 +1196,26 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
               </div>
               <span style={{ fontSize: 11, fontWeight: 700, color: corSeveridade, textTransform: "uppercase", letterSpacing: 0.3 }}>{resumoSeveridade}</span>
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <style>{`@media (max-width:640px){.meta-atual-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))}.meta-atual-grid>div{min-width:0!important}.meta-atual-grid .meta-nome{font-size:11.5px!important;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}`}</style>
+            <div className="meta-atual-grid" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {alertasOrcamento.map((a) => {
                 const cor = CORES_STATUS[a.status];
                 const temNumeros = a.status === "estourado" || a.status === "atencao" || a.status === "ok" || a.status === "meta-atingida" || a.status === "abaixo-meta";
                 const titulo = a.status === "nao-cadastrada" ? "Nenhuma categoria de despesa com esse nome cadastrada ainda"
                   : a.status === "sem-receita" ? "Lance alguma receita no mês para calcular o % sobre a receita"
-                  : `${fmtBRL(a.realizado)} gastos (${a.atualPct}% da receita) — ideal: ${fmtBRL(a.idealValor)} (${a.metaPct}%)`;
+                  : `${fmtBRL(a.realizado)} gastos (${a.atualPct}% da receita) — ideal: ${fmtBRL(a.idealValor)} (${fmtPct(a.metaPct)}%)`;
                 return (
                   <div key={a.classe} title={titulo}
                     style={{ display: "flex", flexDirection: "column", gap: 2, background: t.surface, border: `1px solid ${cor}60`, borderRadius: 9, padding: "7px 12px", minWidth: 128, opacity: (a.status === "nao-cadastrada" || a.status === "sem-receita") ? 0.75 : 1 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
                       <span style={{ width: 8, height: 8, borderRadius: 3, background: a.cor || t.textMuted, flexShrink: 0 }} />
-                      <span style={{ fontSize: 12.5, fontWeight: 600 }}>{a.categoria}</span>
+                      <span className="meta-nome" style={{ fontSize: 12.5, fontWeight: 600 }}>{a.categoria}</span>
                     </div>
                     {temNumeros ? (
                       <>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
                           <span style={{ color: t.textMuted, fontWeight: 600 }}>Meta</span>
-                          <span className="mono" style={{ fontWeight: 700, color: t.textMuted }}>{a.metaPct}%</span>
+                          <span className="mono" style={{ fontWeight: 700, color: t.textMuted }}>{fmtPct(a.metaPct)}%</span>
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
                           <span style={{ color: t.textMuted, fontWeight: 600 }}>Atual</span>
@@ -1181,7 +1225,7 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
                     ) : (
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
                         <span style={{ color: t.textMuted, fontWeight: 600 }}>Meta</span>
-                        <span className="mono" style={{ fontWeight: 700, color: t.textMuted }}>{a.metaPct}%</span>
+                        <span className="mono" style={{ fontWeight: 700, color: t.textMuted }}>{fmtPct(a.metaPct)}%</span>
                       </div>
                     )}
                     <span style={{ fontSize: 9, fontWeight: 700, color: cor, textTransform: "uppercase", letterSpacing: 0.3, marginTop: 2 }}>{LABEL_STATUS[a.status]}</span>
@@ -2799,28 +2843,21 @@ function ModalTransacao({ t, db, dado, tipoInicial, onClose, onSave, onQuickAddS
 
   const salvar = () => {
     // Despesa com categoria e orçamento definido: avisa se, somando esse lançamento, passa de 50% do planejado no mês
-    // Referência de planejado = a MESMA do banner "Meta x Atual" do Dashboard:
-    //  - categorias Fixo/Variável/Lazer: meta % (50/30/10) × receita do mês → alerta a partir de 80% (atenção)
-    //  - Investimentos: não alerta (gastar mais que a meta é bom)
-    //  - outras categorias (ou mês sem receita): cai no valor planejado manual da tela Planejamento, alerta a partir de 50%
+    // Referência de planejado = a MESMA do banner "Meta x Atual" e da aba Planejamento (metaEfetivaCategoria):
+    //  - meta em % (definida no Planejamento ou padrão 50/30/10/10) × receita do mês → alerta a partir de 80%
+    //  - Investimentos: não alerta (investir mais que a meta é bom)
+    //  - orçamento antigo em R$ → alerta a partir de 50%, como antes
     if (tipo === "Despesa" && categoriaId) {
       const [anoTx, mesTx] = dataFinal.split("-").map(Number);
       const noMesTx = (tx) => { if (!tx.data) return false; const [y, m] = tx.data.split("-").map(Number); return y === anoTx && m === mesTx; };
       const ativaTx = (tx) => tx.status !== "cancelado" && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura);
       const categoriaNomeAtual = db.categorias.find((c) => c.id === categoriaId)?.nome || "";
       const classe = normalizarNomeCategoria(categoriaNomeAtual);
-      const metaPct = METAS_IDEAIS_CATEGORIA[classe];
-      const receitaMes = (db.transacoes || [])
-        .filter((tx) => tx.id !== dado?.id && tx.tipo === "Receita" && ativaTx(tx) && noMesTx(tx))
-        .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
-
-      let planejado = 0, limiteAlerta = 50, baseMeta = null;
-      if (metaPct != null && receitaMes > 0) {
-        if (classe !== "INVESTIMENTOS") { planejado = receitaMes * (metaPct / 100); limiteAlerta = 80; baseMeta = metaPct; }
-      } else if (metaPct == null) {
-        const orcamento = (db.orcamentos || []).find((o) => o.categoriaId === categoriaId && o.status === "ativo");
-        planejado = planejadoNoMes(orcamento, anoTx, mesTx - 1);
-      }
+      const receitaMes = receitaDoMes(db.transacoes, anoTx, mesTx - 1, dado?.id);
+      const meta = classe === "INVESTIMENTOS" ? null : metaEfetivaCategoria(db, categoriaId, anoTx, mesTx - 1, receitaMes);
+      const planejado = meta?.planejado || 0;
+      const baseMeta = meta && meta.origem !== "valor" ? meta.pct : null;
+      const limiteAlerta = baseMeta != null ? 80 : 50;
 
       if (planejado > 0) {
         const parcelasNum = podeRepetir ? Math.max(1, Number(parcelas) || 1) : 1;
@@ -3164,17 +3201,37 @@ function ModalBaixaLote({ t, db, onClose, onConfirmar, origemInicial, contaPadra
 /* ============================================================
    PLANEJAMENTO (Planejado x Realizado)
    ============================================================ */
+/* Formata % no padrão brasileiro: 30 → "30", 12.5 → "12,5" */
+const fmtPct = (n) => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+const parsePct = (s) => {
+  if (s === undefined || s === null || String(s).trim() === "") return null;
+  const n = Number(String(s).replace(",", "."));
+  return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null;
+};
+function PercentInput({ t, value, onChange, placeholder, width = 70 }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 4, background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, padding: "0 10px", width, boxSizing: "border-box" }}>
+      <style>{`.pct-in::placeholder{color:${t.textMuted};opacity:.55}`}</style>
+      <input className="pct-in" inputMode="decimal" value={value} placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value.replace(/[^0-9,.]/g, "").slice(0, 5))}
+        style={{ ...inputStyle(t), padding: "8px 0", fontSize: 13.5, textAlign: "right", fontFamily: "inherit" }} />
+      <span style={{ color: t.textMuted, fontSize: 12.5, fontWeight: 600 }}>%</span>
+    </div>
+  );
+}
+
 const PlanejamentoView = React.memo(function PlanejamentoView({ t, db, onChange }) {
   const hoje = new Date();
   const [mesSel, setMesSel] = useState(hoje.getMonth());
   const [anoSel, setAnoSel] = useState(hoje.getFullYear());
   const [editando, setEditando] = useState(null); // categoriaId em edição
-  const [rascunho, setRascunho] = useState(0); // centavos (modo fixo)
   const [modoRascunho, setModoRascunho] = useState("fixo"); // fixo | variavel
+  const [rascunhoPct, setRascunhoPct] = useState(""); // % (texto) do modo fixo
   const [anoEdicao, setAnoEdicao] = useState(hoje.getFullYear()); // ano navegado dentro da grade de meses (modo variável)
-  const [rascunhoVariavel, setRascunhoVariavel] = useState({}); // { "YYYY-MM": centavos }
+  const [rascunhoPctMes, setRascunhoPctMes] = useState({}); // { "YYYY-MM": "30" }
 
   const categoriasDespesa = ordenarPorNome(db.categorias.filter((c) => c.tipo === "Despesa" && c.status === "ativo"));
+  const receitaMesSel = receitaDoMes(db.transacoes, anoSel, mesSel);
 
   const realizadoPorCategoria = (categoriaId) => (db.transacoes || [])
     .filter((tx) => tx.tipo === "Despesa" && tx.status !== "cancelado" && tx.categoriaId === categoriaId && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura))
@@ -3182,58 +3239,57 @@ const PlanejamentoView = React.memo(function PlanejamentoView({ t, db, onChange 
     .reduce((s, tx) => s + (Number(tx.valor) || 0), 0);
 
   const orcamentoDaCategoria = (categoriaId) => (db.orcamentos || []).find((x) => x.categoriaId === categoriaId && x.status === "ativo");
-
-  // Planejamento Fixo repete o mesmo valor em todos os meses. Planejamento Variável usa um valor específico
-  // por mês (valoresPorMes); meses sem valor definido caem no valorPlanejado como padrão.
-  const planejadoPorCategoria = (categoriaId) => planejadoNoMes(orcamentoDaCategoria(categoriaId), anoSel, mesSel);
+  // Mesma regra usada no Dashboard, no alerta da Nova Transação e no Analista
+  const metaDaCategoria = (categoriaId) => metaEfetivaCategoria(db, categoriaId, anoSel, mesSel, receitaMesSel);
 
   const abrirEdicao = (categoriaId) => {
     const o = orcamentoDaCategoria(categoriaId);
-    const modo = o?.modo === "variavel" ? "variavel" : "fixo";
-    setModoRascunho(modo);
-    setRascunho(Math.round((Number(o?.valorPlanejado) || 0) * 100));
+    const ehPct = o?.unidade === "percentual";
+    const meta = metaDaCategoria(categoriaId);
+    setModoRascunho(ehPct && o.modo === "variavel" ? "variavel" : "fixo");
+    const base = ehPct && o.pctPlanejado != null ? o.pctPlanejado : (meta && meta.origem !== "valor" ? meta.pct : "");
+    setRascunhoPct(base === "" || base == null ? "" : fmtPct(base));
+    const porMes = {};
+    if (ehPct) Object.entries(o.pctPorMes || {}).forEach(([k, v]) => { if (v !== null && v !== undefined && v !== "") porMes[k] = fmtPct(v); });
+    setRascunhoPctMes(porMes);
     setAnoEdicao(anoSel);
-    const emCentavos = {};
-    Object.entries(o?.valoresPorMes || {}).forEach(([chave, valor]) => { emCentavos[chave] = Math.round((Number(valor) || 0) * 100); });
-    setRascunhoVariavel(emCentavos);
     setEditando(categoriaId);
-  };
-
-  const setValorMesEdicao = (chave, centavos) => {
-    setRascunhoVariavel((prev) => ({ ...prev, [chave]: centavos }));
   };
 
   const salvarPlanejado = (categoriaId) => {
     const existente = orcamentoDaCategoria(categoriaId);
-    let next = { ...db };
     const catNome = db.categorias.find((c) => c.id === categoriaId)?.nome || "";
-    if (modoRascunho === "variavel") {
-      const valoresPorMes = {};
-      Object.entries(rascunhoVariavel).forEach(([chave, centavos]) => { valoresPorMes[chave] = (Number(centavos) || 0) / 100; });
-      if (existente) {
-        next.orcamentos = db.orcamentos.map((o) => o.id === existente.id ? { ...o, modo: "variavel", valoresPorMes } : o);
-        onChange(next, { tipoOperacao: "edição", entidade: "Orçamento", entidadeId: existente.id, detalhe: `${catNome} (variável) → planejamento mês a mês atualizado` });
-      } else {
-        const novo = { id: uid(), categoriaId, valorPlanejado: 0, modo: "variavel", valoresPorMes, status: "ativo" };
-        next.orcamentos = [...(db.orcamentos || []), novo];
-        onChange(next, { tipoOperacao: "criação", entidade: "Orçamento", entidadeId: novo.id, detalhe: `${catNome} (variável) → planejamento mês a mês` });
-      }
+    const pctPlanejado = parsePct(rascunhoPct);
+    const pctPorMes = {};
+    if (modoRascunho === "variavel") Object.entries(rascunhoPctMes).forEach(([k, v]) => { const n = parsePct(v); if (n != null) pctPorMes[k] = n; });
+    const campos = { unidade: "percentual", modo: modoRascunho, pctPlanejado, pctPorMes };
+    const detalhe = modoRascunho === "variavel"
+      ? `${catNome} (variável) → meta % mês a mês atualizada`
+      : `${catNome} (fixo) → ${pctPlanejado != null ? fmtPct(pctPlanejado) : "—"}% da receita/mês`;
+    let next = { ...db };
+    if (existente) {
+      next.orcamentos = db.orcamentos.map((o) => o.id === existente.id ? { ...o, ...campos } : o);
+      onChange(next, { tipoOperacao: "edição", entidade: "Orçamento", entidadeId: existente.id, detalhe });
     } else {
-      const valor = rascunho / 100;
-      if (existente) {
-        next.orcamentos = db.orcamentos.map((o) => o.id === existente.id ? { ...o, modo: "fixo", valorPlanejado: valor } : o);
-        onChange(next, { tipoOperacao: "edição", entidade: "Orçamento", entidadeId: existente.id, detalhe: `${catNome} (fixo) → ${fmtBRL(valor)}/mês` });
-      } else {
-        const novo = { id: uid(), categoriaId, valorPlanejado: valor, modo: "fixo", valoresPorMes: {}, status: "ativo" };
-        next.orcamentos = [...(db.orcamentos || []), novo];
-        onChange(next, { tipoOperacao: "criação", entidade: "Orçamento", entidadeId: novo.id, detalhe: `${catNome} (fixo) → ${fmtBRL(valor)}/mês` });
-      }
+      const novo = { id: uid(), categoriaId, valorPlanejado: 0, valoresPorMes: {}, status: "ativo", ...campos };
+      next.orcamentos = [...(db.orcamentos || []), novo];
+      onChange(next, { tipoOperacao: "criação", entidade: "Orçamento", entidadeId: novo.id, detalhe });
     }
     setEditando(null);
   };
 
-  const totalPlanejado = categoriasDespesa.reduce((s, c) => s + planejadoPorCategoria(c.id), 0);
-  const totalRealizado = categoriasDespesa.reduce((s, c) => s + realizadoPorCategoria(c.id), 0);
+  const metasPorCategoria = categoriasDespesa.map((c) => ({ c, meta: metaDaCategoria(c.id), realizado: realizadoPorCategoria(c.id) }));
+  const totalPlanejado = metasPorCategoria.reduce((s, x) => s + (x.meta?.planejado || 0), 0);
+  const totalRealizado = metasPorCategoria.reduce((s, x) => s + x.realizado, 0);
+  const somaPct = metasPorCategoria.reduce((s, x) => s + (x.meta && x.meta.origem !== "valor" ? x.meta.pct : 0), 0);
+
+  const cardResumo = (rotulo, valor, cor, sub) => (
+    <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
+      <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>{rotulo}</div>
+      <div className="mono" style={{ fontSize: 21, fontWeight: 600, color: cor || t.text }}>{valor}</div>
+      {sub && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
 
   return (
     <div>
@@ -3247,98 +3303,132 @@ const PlanejamentoView = React.memo(function PlanejamentoView({ t, db, onChange 
         </select>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 18 }}>
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
-          <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Planejado ({MESES_LONGOS[mesSel]})</div>
-          <div className="mono" style={{ fontSize: 21, fontWeight: 600 }}>{fmtBRL(totalPlanejado)}</div>
-        </div>
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
-          <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Realizado ({MESES_LONGOS[mesSel]})</div>
-          <div className="mono" style={{ fontSize: 21, fontWeight: 600, color: totalRealizado > totalPlanejado && totalPlanejado > 0 ? t.danger : t.text }}>{fmtBRL(totalRealizado)}</div>
-        </div>
-        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "16px 18px", boxShadow: t.shadow }}>
-          <div style={{ fontSize: 12.5, color: t.textMuted, fontWeight: 600, marginBottom: 8 }}>Diferença</div>
-          <div className="mono" style={{ fontSize: 21, fontWeight: 600, color: totalPlanejado - totalRealizado < 0 ? t.danger : t.primary }}>{fmtBRL(totalPlanejado - totalRealizado)}</div>
-        </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14, marginBottom: 14 }}>
+        {cardResumo(`Receita (${MESES_LONGOS[mesSel]})`, fmtBRL(receitaMesSel), t.primary, "base de cálculo das metas")}
+        {cardResumo("Planejado", fmtBRL(totalPlanejado), null, `${fmtPct(somaPct)}% da receita`)}
+        {cardResumo("Realizado", fmtBRL(totalRealizado), totalRealizado > totalPlanejado && totalPlanejado > 0 ? t.danger : null, receitaMesSel > 0 ? `${fmtPct((totalRealizado / receitaMesSel) * 100)}% da receita` : null)}
+        {cardResumo("Diferença", fmtBRL(totalPlanejado - totalRealizado), totalPlanejado - totalRealizado < 0 ? t.danger : t.primary)}
       </div>
+
+      {somaPct > 100.05 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: `${t.danger}10`, border: `1px solid ${t.danger}40`, color: t.danger, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>
+          <AlertTriangle size={14} /> As metas somam {fmtPct(somaPct)}% da receita — mais do que 100%.
+        </div>
+      )}
+      {receitaMesSel <= 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: t.surfaceAlt, border: `1px solid ${t.border}`, color: t.textMuted, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, marginBottom: 14 }}>
+          <AlertTriangle size={14} /> Sem receita lançada em {MESES_LONGOS[mesSel]} — lance uma receita para calcular o valor das metas.
+        </div>
+      )}
 
       {categoriasDespesa.length === 0 ? (
         <EmptyState t={t} text="Cadastre categorias de despesa em “Categorias” para definir o planejamento mensal." />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {categoriasDespesa.map((c) => {
-            const planejado = planejadoPorCategoria(c.id);
-            const realizado = realizadoPorCategoria(c.id);
+          {metasPorCategoria.map(({ c, meta, realizado }) => {
+            const planejado = meta?.planejado || 0;
+            const ehInvest = normalizarNomeCategoria(c.nome) === "INVESTIMENTOS";
             const pct = planejado > 0 ? Math.min(100, Math.round((realizado / planejado) * 100)) : (realizado > 0 ? 100 : 0);
-            const estourou = planejado > 0 && realizado > planejado;
+            const estourou = !ehInvest && planejado > 0 && realizado > planejado;
             const orc = orcamentoDaCategoria(c.id);
-            const ehVariavel = orc?.modo === "variavel";
+            const ehVariavel = orc?.unidade === "percentual" && orc.modo === "variavel";
+            const selo = !meta ? null
+              : meta.origem === "definida" ? (ehVariavel ? "META VARIÁVEL" : "META FIXA")
+              : meta.origem === "padrao" ? "META PADRÃO" : "EM R$ (ANTIGO)";
+            const pctRealizado = receitaMesSel > 0 ? (realizado / receitaMesSel) * 100 : null;
             return (
               <div key={c.id} style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 16, boxShadow: t.shadow }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ width: 10, height: 10, borderRadius: 3, background: c.cor }} />
                     <span style={{ fontWeight: 600, fontSize: 13.5 }}>{c.nome}</span>
-                    {ehVariavel && <span style={{ fontSize: 10, fontWeight: 600, color: t.textMuted, background: t.surfaceAlt, padding: "2px 7px", borderRadius: 5 }}>VARIÁVEL</span>}
+                    {meta && meta.pct != null && meta.origem !== "valor" && (
+                      <span className="mono" style={{ fontSize: 12, fontWeight: 700, color: t.primary, background: `${t.primary}14`, padding: "2px 8px", borderRadius: 6 }}>{fmtPct(meta.pct)}% da receita</span>
+                    )}
+                    {selo && <span style={{ fontSize: 10, fontWeight: 600, color: t.textMuted, background: t.surfaceAlt, padding: "2px 7px", borderRadius: 5 }}>{selo}</span>}
                   </div>
-                  {editando === c.id ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start", width: "100%" }}>
-                      <div style={{ display: "flex", gap: 14 }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, cursor: "pointer" }}>
+                  {editando !== c.id && (
+                    <button onClick={() => abrirEdicao(c.id)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: t.primary, fontSize: 12.5, fontWeight: 600 }}>
+                      <Pencil size={12} /> {meta?.origem === "definida" ? "Editar meta" : "Definir meta %"}
+                    </button>
+                  )}
+                </div>
+
+                {editando === c.id && (() => {
+                  const pctFixoNum = parsePct(rascunhoPct);
+                  return (
+                    <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: 14, marginBottom: 12 }}>
+                      <div style={{ display: "flex", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
                           <input type="radio" checked={modoRascunho === "fixo"} onChange={() => setModoRascunho("fixo")} />
-                          Planejamento Fixo
+                          Meta fixa <span style={{ fontWeight: 400, color: t.textMuted }}>(mesmo % todo mês)</span>
                         </label>
-                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, cursor: "pointer" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
                           <input type="radio" checked={modoRascunho === "variavel"} onChange={() => setModoRascunho("variavel")} />
-                          Planejamento Variável
+                          Meta variável <span style={{ fontWeight: 400, color: t.textMuted }}>(% por mês)</span>
                         </label>
                       </div>
 
                       {modoRascunho === "fixo" ? (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <CurrencyInput t={t} centavos={rascunho} onChange={setRascunho} />
-                          <IconBtn t={t} title="Salvar" onClick={() => salvarPlanejado(c.id)}><Check size={13} /></IconBtn>
-                          <IconBtn t={t} title="Cancelar" onClick={() => setEditando(null)}><X size={13} /></IconBtn>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <PercentInput t={t} value={rascunhoPct} onChange={setRascunhoPct} placeholder="0" width={90} />
+                          <span style={{ fontSize: 12.5, color: t.textMuted }}>
+                            da receita de {MESES_LONGOS[mesSel]} ({fmtBRL(receitaMesSel)}) ={" "}
+                            <strong className="mono" style={{ color: t.text }}>{fmtBRL(pctFixoNum != null ? receitaMesSel * pctFixoNum / 100 : 0)}</strong>
+                          </span>
                         </div>
                       ) : (
-                        <div style={{ width: "100%" }}>
+                        <div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, color: t.textMuted }}>Meses em branco usam</span>
+                            <PercentInput t={t} value={rascunhoPct} onChange={setRascunhoPct} placeholder="0" width={80} />
+                          </div>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginBottom: 10 }}>
                             <IconBtn t={t} title="Ano anterior" onClick={() => setAnoEdicao((a) => a - 1)}><ChevronLeft size={14} /></IconBtn>
                             <span style={{ fontWeight: 700, fontSize: 14 }}>{anoEdicao}</span>
                             <IconBtn t={t} title="Próximo ano" onClick={() => setAnoEdicao((a) => a + 1)}><ChevronRight size={14} /></IconBtn>
                           </div>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(118px, 1fr))", gap: 8 }}>
                             {MESES_LONGOS.map((nomeMes, i) => {
                               const chave = `${anoEdicao}-${String(i + 1).padStart(2, "0")}`;
+                              const receitaM = receitaDoMes(db.transacoes, anoEdicao, i);
+                              const pctM = parsePct(rascunhoPctMes[chave]) ?? pctFixoNum;
                               return (
-                                <div key={chave} style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: "10px 12px" }}>
-                                  <div style={{ fontSize: 11, color: t.textMuted, marginBottom: 6, fontWeight: 600 }}>{nomeMes.slice(0, 3)}/{String(anoEdicao).slice(2)}</div>
-                                  <CurrencyInput t={t} centavos={rascunhoVariavel[chave] || 0} onChange={(v) => setValorMesEdicao(chave, v)} />
+                                <div key={chave} style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 10, padding: "9px 10px" }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                                    <span style={{ fontSize: 11.5, fontWeight: 700 }}>{nomeMes.slice(0, 3)}/{String(anoEdicao).slice(2)}</span>
+                                    <span className="mono" style={{ fontSize: 10.5, color: t.textMuted }} title="Receita do mês">{fmtBRL(receitaM)}</span>
+                                  </div>
+                                  <PercentInput t={t} value={rascunhoPctMes[chave] ?? ""} placeholder={pctFixoNum != null ? fmtPct(pctFixoNum) : "0"}
+                                    onChange={(v) => setRascunhoPctMes((prev) => ({ ...prev, [chave]: v }))} width="100%" />
+                                  <div className="mono" style={{ fontSize: 11, color: receitaM > 0 ? t.text : t.textMuted, marginTop: 5, textAlign: "right" }}>
+                                    = {receitaM > 0 && pctM != null ? fmtBRL(receitaM * pctM / 100) : "sem receita"}
+                                  </div>
                                 </div>
                               );
                             })}
                           </div>
-                          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-                            <IconBtn t={t} title="Salvar" onClick={() => salvarPlanejado(c.id)}><Check size={13} /></IconBtn>
-                            <IconBtn t={t} title="Cancelar" onClick={() => setEditando(null)}><X size={13} /></IconBtn>
-                          </div>
                         </div>
                       )}
+                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+                        <button onClick={() => setEditando(null)} style={{ ...btnGhost(t), fontWeight: 600 }}><X size={13} /> Cancelar</button>
+                        <button onClick={() => salvarPlanejado(c.id)} style={btnPrimary(t)}><Check size={13} /> Salvar meta</button>
+                      </div>
                     </div>
-                  ) : (
-                    <button onClick={() => abrirEdicao(c.id)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: t.primary, fontSize: 12.5, fontWeight: 600 }}>
-                      <Pencil size={12} /> {planejado > 0 ? "Editar planejado" : "Definir planejado"}
-                    </button>
-                  )}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6 }}>
-                  <span className="mono" style={{ color: t.textMuted }}>Realizado: {fmtBRL(realizado)}</span>
+                  );
+                })()}
+
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 6, gap: 8, flexWrap: "wrap" }}>
+                  <span className="mono" style={{ color: t.textMuted }}>Realizado: {fmtBRL(realizado)}{pctRealizado != null ? ` (${fmtPct(pctRealizado)}%)` : ""}</span>
                   <span className="mono" style={{ color: t.textMuted }}>Planejado: {fmtBRL(planejado)}</span>
                 </div>
                 <div style={{ height: 8, borderRadius: 6, background: t.surfaceAlt, overflow: "hidden" }}>
                   <div style={{ height: "100%", width: `${pct}%`, background: estourou ? t.danger : t.primary, borderRadius: 6, transition: "width .3s" }} />
                 </div>
-                {estourou && <div style={{ fontSize: 11, color: t.danger, marginTop: 6 }}>Orçamento estourado em {fmtBRL(realizado - planejado)}</div>}
+                {estourou && <div style={{ fontSize: 11, color: t.danger, marginTop: 6 }}>Meta estourada em {fmtBRL(realizado - planejado)}</div>}
+                {ehInvest && planejado > 0 && realizado >= planejado && <div style={{ fontSize: 11, color: t.primary, marginTop: 6 }}>Meta de investimento atingida</div>}
+                {meta?.origem === "valor" && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 6 }}>Planejamento antigo em R$ — clique em “Definir meta %” para passar a usar % da receita.</div>}
+                {!meta && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 6 }}>Sem meta definida.</div>}
               </div>
             );
           })}
@@ -4277,14 +4367,17 @@ const AnalistaFinanceiroView = React.memo(function AnalistaFinanceiroView({ t, d
     filtradas.filter((tx) => tx.tipo === "Despesa").forEach((tx) => {
       const cat = tx.categoriaId ? db.categorias.find((c) => c.id === tx.categoriaId) : null;
       const chave = cat ? cat.id : "sem-categoria";
-      if (!mapa.has(chave)) mapa.set(chave, { categoria: cat ? cat.nome : "Sem categoria", cor: cat ? cat.cor : t.textMuted, total: 0 });
+      if (!mapa.has(chave)) mapa.set(chave, { categoriaId: cat ? cat.id : null, categoria: cat ? cat.nome : "Sem categoria", cor: cat ? cat.cor : t.textMuted, total: 0 });
       mapa.get(chave).total += Number(tx.valor) || 0;
     });
     // % que cada categoria representa da receita do período, e comparação com a meta ideal de alocação
     // (50% Fixo / 30% Variável / 10% Lazer / 10% Investimentos) — só preenchida pra categorias com esse nome.
     return Array.from(mapa.values())
       .map((d) => {
-        const idealPct = METAS_IDEAIS_CATEGORIA[normalizarNomeCategoria(d.categoria)] ?? null;
+        // Meta % da aba Planejamento (mês de início do período); sem % definido, padrão 50/30/10/10
+        const [anoIni, mesIni] = (dataIni || hojeISO()).split("-").map(Number);
+        const metaDef = d.categoriaId ? metaEfetivaCategoria(db, d.categoriaId, anoIni, mesIni - 1, totalReceitas) : null;
+        const idealPct = metaDef && metaDef.origem !== "valor" ? metaDef.pct : null;
         const pctReceita = totalReceitas > 0 ? (d.total / totalReceitas) * 100 : null;
         return {
           ...d,
