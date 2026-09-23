@@ -2376,17 +2376,59 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
     return nova.id;
   };
 
-  const salvar = (form) => {
-    let next = { ...db };
-    if (form.id) {
-      next.transacoes = next.transacoes.map((tx) => tx.id === form.id ? {
+  /* Ao editar uma parcela (despesa parcelada ou receita recorrente) trocando conta/cartão, categoria ou subcategoria,
+     pergunta se a mudança vale também para as outras parcelas do mesmo lançamento (mesmo grupoParcelamento). */
+  const [perguntaParcelas, setPerguntaParcelas] = useState(null); // { form, tx, grupo, mudouOrigem, mudouClassif }
+  const parcelasDoGrupo = (tx) => !tx?.grupoParcelamento ? [] : db.transacoes
+    .filter((x) => x.grupoParcelamento === tx.grupoParcelamento)
+    .sort((a, b) => ((a.parcelaAtual || a.ocorrenciaAtual || 0) - (b.parcelaAtual || b.ocorrenciaAtual || 0)) || (a.data || "").localeCompare(b.data || ""));
+
+  const aplicarEdicao = (form, escopo) => {
+    // escopo: "esta" | "proximas" | "todas"
+    const txOriginal = db.transacoes.find((x) => x.id === form.id);
+    const grupo = parcelasDoGrupo(txOriginal);
+    const idxAtual = grupo.findIndex((x) => x.id === form.id);
+    const mudouOrigem = txOriginal && (txOriginal.origemTipo !== form.origemTipo || txOriginal.origemId !== form.origemId);
+    const alvos = new Set(escopo === "todas" ? grupo.map((x) => x.id) : escopo === "proximas" ? grupo.slice(idxAtual).map((x) => x.id) : []);
+    alvos.delete(form.id);
+    let origemPulada = 0;
+    const next = { ...db };
+    next.transacoes = next.transacoes.map((tx) => {
+      if (tx.id === form.id) return {
         ...tx, tipo: form.tipo, descricao: form.descricao, valor: form.valor, data: form.data,
         origemTipo: form.origemTipo, origemId: form.origemId,
         categoriaId: form.categoriaId, subcategoriaId: form.subcategoriaId,
         dataInclusao: form.dataInclusao, dataRecebimento: form.dataRecebimento,
         status: form.statusInicial || tx.status, dataBaixa: form.dataBaixa, contaPagamentoId: form.contaPagamentoId
-      } : tx);
-      onChange(next, { tipoOperacao: "edição", entidade: "Transação", entidadeId: form.id, detalhe: form.descricao });
+      };
+      if (!alvos.has(tx.id)) return tx;
+      const atualizada = { ...tx, categoriaId: form.categoriaId, subcategoriaId: form.subcategoriaId };
+      // Conta/cartão não muda em parcelas já pagas/recebidas nem canceladas — mexeria no saldo e na fatura já quitada
+      if (mudouOrigem) {
+        if (tx.status === "pendente") { atualizada.origemTipo = form.origemTipo; atualizada.origemId = form.origemId; }
+        else origemPulada++;
+      }
+      return atualizada;
+    });
+    const qtdOutras = alvos.size;
+    onChange(next, { tipoOperacao: "edição", entidade: "Transação", entidadeId: form.id, detalhe: `${form.descricao}${qtdOutras ? ` (+ ${qtdOutras} parcela(s) do mesmo lançamento${origemPulada ? `; conta mantida em ${origemPulada} já quitada(s)` : ""})` : ""}` });
+    setPerguntaParcelas(null);
+    setModal(null);
+  };
+
+  const salvar = (form) => {
+    let next = { ...db };
+    if (form.id) {
+      const txOriginal = db.transacoes.find((x) => x.id === form.id);
+      const grupo = parcelasDoGrupo(txOriginal);
+      const mudouOrigem = txOriginal && (txOriginal.origemTipo !== form.origemTipo || txOriginal.origemId !== form.origemId);
+      const mudouClassif = txOriginal && ((txOriginal.categoriaId || null) !== (form.categoriaId || null) || (txOriginal.subcategoriaId || null) !== (form.subcategoriaId || null));
+      if (grupo.length > 1 && (mudouOrigem || mudouClassif)) {
+        setPerguntaParcelas({ form, tx: txOriginal, grupo, mudouOrigem, mudouClassif });
+        return;
+      }
+      aplicarEdicao(form, "esta");
+      return;
     } else if (form.tipo === "Despesa") {
       const parcelas = Math.max(1, Number(form.parcelas) || 1);
       const grupoId = uid();
@@ -2773,6 +2815,43 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
       )}
 
       {modal && <ModalTransacao t={t} db={db} dado={modal.dado} tipoInicial={modal.tipoInicial} onClose={() => setModal(null)} onSave={salvar} onQuickAddSubcategoria={criarSubcategoriaRapida} />}
+      {perguntaParcelas && (() => {
+        const { form, tx, grupo, mudouOrigem, mudouClassif } = perguntaParcelas;
+        const idx = grupo.findIndex((x) => x.id === tx.id);
+        const proximas = grupo.length - idx - 1;
+        const ehReceita = tx.tipo === "Receita";
+        const palavra = ehReceita ? "ocorrência" : "parcela";
+        const quitadasOutras = grupo.filter((x) => x.id !== tx.id && x.status !== "pendente").length;
+        const nomeOrigem = (tipo, id) => tipo === "cartao" ? (db.cartoes || []).find((c) => c.id === id)?.nome : db.contas.find((c) => c.id === id)?.nomeConta;
+        const nomeCat = (id) => db.categorias.find((c) => c.id === id)?.nome || "Sem categoria";
+        const nomeSub = (id) => db.subcategorias.find((c) => c.id === id)?.nome;
+        const opcao = (escopo, titulo, sub, destaque) => (
+          <button onClick={() => aplicarEdicao(form, escopo)} style={{ width: "100%", textAlign: "left", display: "block", padding: "11px 13px", borderRadius: 10, marginBottom: 8, border: `1px solid ${destaque ? t.primary : t.border}`, background: destaque ? `${t.primary}12` : t.surfaceAlt, color: t.text }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: destaque ? t.primary : t.text }}>{titulo}</div>
+            <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 2 }}>{sub}</div>
+          </button>
+        );
+        return (
+          <ModalShell t={t} title="Alterar as outras parcelas também?" onClose={() => setPerguntaParcelas(null)}>
+            <p style={{ fontSize: 12.5, marginBottom: 10, lineHeight: 1.5 }}>
+              Este lançamento tem <strong>{grupo.length} {palavra}s</strong> (esta é a {idx + 1}ª). Você alterou:
+            </p>
+            <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: "9px 12px", marginBottom: 14, fontSize: 12, lineHeight: 1.7 }}>
+              {mudouOrigem && <div><Wallet size={11} style={{ display: "inline", marginRight: 5 }} />{ehReceita ? "Conta" : "Conta/cartão"}: <span style={{ color: t.textMuted, textDecoration: "line-through" }}>{nomeOrigem(tx.origemTipo, tx.origemId) || "—"}</span> → <strong>{nomeOrigem(form.origemTipo, form.origemId) || "—"}</strong></div>}
+              {mudouClassif && <div><Tags size={11} style={{ display: "inline", marginRight: 5 }} />Categoria: <span style={{ color: t.textMuted, textDecoration: "line-through" }}>{nomeCat(tx.categoriaId)}{nomeSub(tx.subcategoriaId) ? ` › ${nomeSub(tx.subcategoriaId)}` : ""}</span> → <strong>{nomeCat(form.categoriaId)}{nomeSub(form.subcategoriaId) ? ` › ${nomeSub(form.subcategoriaId)}` : ""}</strong></div>}
+            </div>
+            {opcao("esta", `Só esta ${palavra}`, "As outras continuam como estão.")}
+            {proximas > 0 && idx > 0 && opcao("proximas", `Esta e as próximas (${proximas + 1})`, `Da ${idx + 1}ª até a ${grupo.length}ª. As anteriores não mudam.`)}
+            {opcao("todas", `Todas as ${grupo.length} ${palavra}s`, "Aplica a mudança no lançamento inteiro.", true)}
+            {mudouOrigem && quitadasOutras > 0 && (
+              <p style={{ fontSize: 11, color: t.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+                <AlertTriangle size={11} style={{ display: "inline", marginRight: 4, color: t.accent }} />
+                A {ehReceita ? "conta" : "conta/cartão"} não é trocada nas {palavra}s já {ehReceita ? "recebidas" : "pagas"} ou canceladas ({quitadasOutras}), para não alterar saldos e faturas já fechadas. A categoria é trocada em todas.
+              </p>
+            )}
+          </ModalShell>
+        );
+      })()}
       {modalBaixa && <ModalBaixaLote t={t} db={db} origemInicial={modalBaixa.origemInicial} contaPadraoInicial={modalBaixa.contaPadraoInicial} somenteIds={modalBaixa.somenteIds} onClose={() => setModalBaixa(null)} onConfirmar={confirmarBaixaLote} />}
       {excluindoTx && (
         <ModalConfirmarExclusao t={t} titulo="Excluir Transação"
