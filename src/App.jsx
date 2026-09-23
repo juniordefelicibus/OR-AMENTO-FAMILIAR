@@ -6370,6 +6370,21 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
   };
 
   /* Cancela a OS: despesas ainda pendentes geradas por ela são canceladas; as já pagas ficam como estão */
+  /* Exclui a OS de vez: some da lista do veículo, as despesas geradas por ela saem de Transações
+     (inclusive parcelas já pagas) e os anexos são apagados do armazenamento. Fica registrado na Auditoria. */
+  const excluirOS = (os) => {
+    const txDaOS = (db.transacoes || []).filter((tx) => tx.osId === os.id);
+    const next = {
+      ...db,
+      ordensServico: ordens.filter((o) => o.id !== os.id),
+      transacoes: (db.transacoes || []).filter((tx) => tx.osId !== os.id)
+    };
+    if (os.anexos?.length && anexosStorage.disponivel()) anexosStorage.remover(os.anexos).catch(() => {});
+    const veiculo = veiculos.find((v) => v.id === os.veiculoId);
+    onChange(next, { tipoOperacao: "exclusão", entidade: "Ordem de Serviço", entidadeId: os.id, detalhe: `${fmtNumeroOS(os.numero)} — ${veiculo?.nome || ""} — ${fmtBRL(totalOS(os))}${txDaOS.length ? ` (${txDaOS.length} despesa(s) removida(s) de Transações)` : ""}` });
+    setOsAberta(null);
+  };
+
   const cancelarOS = (os) => {
     const next = {
       ...db,
@@ -6400,6 +6415,7 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
           onClose={() => setOsAberta(null)}
           onSalvar={salvarOS}
           onCancelarOS={cancelarOS}
+          onExcluirOS={excluirOS}
           onAtualizarAnexos={atualizarAnexosOS}
         />
       )}
@@ -6789,7 +6805,7 @@ async function gerarPdfOS({ os, veiculo, origemNome, origemTipo, categoriaNome, 
 
 const novoItemOS = () => ({ id: uid(), item: "", descricao: "", qtd: 1, precoUnit: 0 });
 
-function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximoNumero, onClose, onSalvar, onCancelarOS, onAtualizarAnexos }) {
+function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximoNumero, onClose, onSalvar, onCancelarOS, onExcluirOS, onAtualizarAnexos }) {
   const somenteLeitura = dado && dado.status !== "aberta";
   const [osId] = useState(() => dado?.id || uid()); // id já reservado pra OS nova, usado na pasta dos anexos
   const [anexos, setAnexos] = useState(dado?.anexos || []);
@@ -6828,6 +6844,8 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
   };
   const [jaPaga, setJaPaga] = useState(!!pg0.jaPaga);
   const [confirmarCancelar, setConfirmarCancelar] = useState(false);
+  const [confirmarExcluir, setConfirmarExcluir] = useState(false);
+  const [textoExcluir, setTextoExcluir] = useState("");
 
   const veiculosAtivos = (db.veiculos || []).filter((v) => v.status === "ativo" || v.id === veiculoId);
   const contasAtivas = db.contas.filter((c) => c.status === "ativo");
@@ -7045,8 +7063,40 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
         {dado && dado.status !== "cancelada" && (
           <button onClick={() => setConfirmarCancelar(true)} style={{ ...btnGhost(t), color: t.danger, minWidth: 120 }}><Ban size={14} /> Cancelar OS</button>
         )}
+        {dado && (
+          <button onClick={() => { setTextoExcluir(""); setConfirmarExcluir(true); }} title="Excluir esta OS definitivamente" style={{ ...btnGhost(t), color: t.danger, minWidth: 110 }}><Trash2 size={14} /> Excluir OS</button>
+        )}
       </div>
       {!somenteLeitura && !podeLancar && podeSalvar && <p style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>Escolha a conta ou cartão de pagamento para lançar a despesa. Enquanto isso, dá pra salvar a OS como aberta.</p>}
+
+      {confirmarExcluir && (() => {
+        const txDaOS = (db.transacoes || []).filter((tx) => tx.osId === dado.id);
+        const pagas = txDaOS.filter((tx) => tx.status === "concluido").length;
+        const liberado = textoExcluir.trim().toLowerCase() === "excluir";
+        return (
+          <ModalShell t={t} title={`Excluir ${fmtNumeroOS(dado.numero)}?`} onClose={() => setConfirmarExcluir(false)}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+              <div style={{ width: 46, height: 46, borderRadius: "50%", background: `${t.danger}18`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Trash2 size={21} color={t.danger} />
+              </div>
+            </div>
+            <p style={{ fontSize: 13, marginBottom: 8, lineHeight: 1.5 }}>
+              A OS de <strong className="mono">{fmtBRL(totalOS(dado))}</strong> será apagada <strong>permanentemente</strong>. Não tem como desfazer.
+            </p>
+            <ul style={{ fontSize: 12, color: t.textMuted, margin: "0 0 14px", paddingLeft: 18, lineHeight: 1.6 }}>
+              {txDaOS.length > 0 && <li>{txDaOS.length} despesa(s) gerada(s) por ela sairão de Transações{pagas > 0 ? <> — <strong style={{ color: t.danger }}>{pagas} já paga(s)</strong>, o que muda o saldo da conta/fatura</> : ""}.</li>}
+              {dado.anexos?.length > 0 && <li>{dado.anexos.length} anexo(s) (nota fiscal/fotos) serão apagados.</li>}
+              <li>A exclusão fica registrada na Auditoria.</li>
+            </ul>
+            <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, marginBottom: 6 }}>Digite <strong style={{ color: t.danger }}>excluir</strong> para confirmar:</label>
+            <input autoFocus value={textoExcluir} onChange={(e) => setTextoExcluir(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && liberado) onExcluirOS(dado); }} placeholder="excluir" style={{ ...celInput(t), padding: "9px 10px", fontSize: 13.5, marginBottom: 16, borderColor: liberado ? t.danger : t.border }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setConfirmarExcluir(false)} style={{ ...btnGhost(t), flex: 1 }}>Voltar</button>
+              <button disabled={!liberado} onClick={() => onExcluirOS(dado)} style={{ ...btnPrimary(t), flex: 1, justifyContent: "center", background: t.danger, opacity: liberado ? 1 : 0.45 }}><Trash2 size={14} /> Excluir</button>
+            </div>
+          </ModalShell>
+        );
+      })()}
 
       {confirmarCancelar && (
         <ModalShell t={t} title={`Cancelar ${fmtNumeroOS(dado.numero)}?`} onClose={() => setConfirmarCancelar(false)}>
