@@ -874,7 +874,44 @@ function Header({ t, theme, toggleTheme, session, onLogout, onMenu, routeTitle }
 /* ============================================================
    DASHBOARD
    ============================================================ */
-const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransacao, onVerTransacoes, onVerMetas }) {
+/* Banner do Dashboard: manutenções de veículo próximas (faltando ≤ antecedência) ou vencidas */
+function BannerLembretesVeiculos({ t, db, onVerVeiculo }) {
+  const pendentes = lembretesPendentes(db);
+  if (!pendentes.length) return null;
+  const temVencida = pendentes.some((p) => p.status === "vencida");
+  const cor = temVencida ? t.danger : t.accent;
+  return (
+    <div style={{ background: `${cor}0D`, border: `1.5px solid ${cor}50`, borderRadius: 14, padding: "14px 16px", marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <Car size={16} color={cor} />
+        <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>Manutenção de veículos</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: cor, textTransform: "uppercase", letterSpacing: 0.3, marginLeft: "auto" }}>
+          {pendentes.length} {pendentes.length === 1 ? "lembrete" : "lembretes"}
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
+        {pendentes.map((p) => {
+          const c = corStatusLembrete(t, p.status);
+          return (
+            <button key={`${p.veiculo.id}-${p.lembrete.id}`} onClick={() => onVerVeiculo && onVerVeiculo(p.veiculo.id)} style={{ textAlign: "left", background: t.surface, border: `1px solid ${c}50`, borderRadius: 10, padding: "9px 11px", color: t.text, display: "flex", alignItems: "center", gap: 10 }}>
+              <Wrench size={15} color={c} style={{ flexShrink: 0 }} />
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: "block", fontSize: 12.5, fontWeight: 700 }}>{p.lembrete.nome} · {p.veiculo.nome}</span>
+                <span style={{ display: "block", fontSize: 11.5, color: c, fontWeight: 600 }}>
+                  {p.status === "vencida" ? `Vencida há ${fmtKm(-p.faltam)}` : `Faltam ${fmtKm(p.faltam)}`}
+                  <span style={{ color: t.textMuted, fontWeight: 400 }}> · agendar aos {fmtKm(p.proxima)} (atual {fmtKm(p.kmAtual)})</span>
+                </span>
+              </span>
+              <ChevronRight size={14} color={t.textMuted} />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransacao, onVerTransacoes, onVerMetas, onVerVeiculo }) {
   const transacoes = db.transacoes || [];
   const ativas = transacoes.filter((tx) => tx.status !== "cancelado" && !(tx.origemTipo === "conta" && tx.grupoPagamentoFatura));
 
@@ -1179,6 +1216,8 @@ const Dashboard = React.memo(function Dashboard({ t, db, onChange, onNovaTransac
           </div>
         ))}
       </div>
+
+      <BannerLembretesVeiculos t={t} db={db} onVerVeiculo={onVerVeiculo} />
 
       {(() => {
         const corSeveridade = severidadeGeralOrcamento === "estourado" ? t.danger : severidadeGeralOrcamento === "atencao" ? t.accent : t.primary;
@@ -6208,6 +6247,72 @@ const STATUS_OS = {
   cancelada: { label: "Cancelada", cor: (t) => t.textMuted }
 };
 
+/* ---------- Lembretes de manutenção por quilometragem ----------
+   Cada veículo guarda seus lembretes em veiculo.lembretes = [{ id, nome, intervaloKm, antecedenciaKm, kmUltima, ativo }]
+   e leituras avulsas do hodômetro em veiculo.leiturasKm = [{ id, data, km }].
+   - Km atual do veículo = maior km entre as OS (não canceladas) e as leituras avulsas.
+   - Última realização de um lembrete = maior km das OS (não canceladas) que marcaram esse lembrete
+     (os.lembretesRealizados = [lembreteId]); se nenhuma OS marcou, usa o "km da última vez" informado no cadastro.
+   - Próxima = última + intervalo. Aviso quando faltar ≤ antecedência (padrão 2.000 km); "vencida" quando passar. */
+const fmtKm = (n) => `${Math.round(Number(n) || 0).toLocaleString("pt-BR")} km`;
+const LEMBRETES_SUGERIDOS = [
+  { nome: "Troca de óleo", intervaloKm: 10000 },
+  { nome: "Filtro de ar", intervaloKm: 10000 },
+  { nome: "Alinhamento e balanceamento", intervaloKm: 10000 },
+  { nome: "Pastilhas de freio", intervaloKm: 30000 },
+  { nome: "Correia dentada", intervaloKm: 50000 },
+  { nome: "Velas", intervaloKm: 40000 }
+];
+function kmAtualVeiculo(db, veiculo) {
+  const kmsOS = (db.ordensServico || []).filter((o) => o.veiculoId === veiculo.id && o.status !== "cancelada").map((o) => Number(o.km) || 0);
+  const kmsLeitura = (veiculo.leiturasKm || []).map((l) => Number(l.km) || 0);
+  const kmsBase = (veiculo.lembretes || []).map((l) => Number(l.kmUltima) || 0);
+  return Math.max(0, ...kmsOS, ...kmsLeitura, ...kmsBase);
+}
+/* Leitura mais alta registrada (pra mostrar "atualizado em …") */
+function ultimaLeituraVeiculo(db, veiculo) {
+  const fontes = [
+    ...(db.ordensServico || []).filter((o) => o.veiculoId === veiculo.id && o.status !== "cancelada" && Number(o.km) > 0).map((o) => ({ km: Number(o.km), data: o.data, origem: fmtNumeroOS(o.numero) })),
+    ...(veiculo.leiturasKm || []).map((l) => ({ km: Number(l.km) || 0, data: l.data, origem: "leitura manual" }))
+  ];
+  return fontes.sort((a, b) => b.km - a.km || (b.data || "").localeCompare(a.data || ""))[0] || null;
+}
+function statusLembrete(db, veiculo, lembrete, kmAtual = kmAtualVeiculo(db, veiculo)) {
+  const intervalo = Number(lembrete.intervaloKm) || 0;
+  const antecedencia = lembrete.antecedenciaKm === "" || lembrete.antecedenciaKm == null ? 2000 : Number(lembrete.antecedenciaKm) || 0;
+  const realizacoes = (db.ordensServico || [])
+    .filter((o) => o.veiculoId === veiculo.id && o.status !== "cancelada" && (o.lembretesRealizados || []).includes(lembrete.id) && Number(o.km) > 0)
+    .map((o) => ({ km: Number(o.km), data: o.data, os: o }));
+  const ultimaOS = realizacoes.sort((a, b) => b.km - a.km)[0] || null;
+  const temBase = lembrete.kmUltima !== "" && lembrete.kmUltima != null;
+  const kmBase = Number(lembrete.kmUltima) || 0;
+  const ultima = ultimaOS && (!temBase || ultimaOS.km >= kmBase) ? ultimaOS : (temBase ? { km: kmBase, data: null, os: null } : null);
+  if (!intervalo || !ultima) return { status: "sem-referencia", kmAtual, antecedencia, intervalo, ultima: null, proxima: null, faltam: null, pct: 0 };
+  const proxima = ultima.km + intervalo;
+  const faltam = proxima - kmAtual;
+  const pct = Math.max(0, Math.min(100, ((kmAtual - ultima.km) / intervalo) * 100));
+  const status = faltam <= 0 ? "vencida" : faltam <= antecedencia ? "proxima" : "ok";
+  return { status, kmAtual, antecedencia, intervalo, ultima, proxima, faltam, pct };
+}
+/* Lembretes que pedem atenção (próximos ou vencidos) nos veículos ativos — usado no banner do Dashboard */
+function lembretesPendentes(db) {
+  const lista = [];
+  for (const v of db.veiculos || []) {
+    if (v.status === "inativo") continue;
+    const kmAtual = kmAtualVeiculo(db, v);
+    for (const l of v.lembretes || []) {
+      if (l.ativo === false) continue;
+      const st = statusLembrete(db, v, l, kmAtual);
+      if (st.status === "proxima" || st.status === "vencida") lista.push({ veiculo: v, lembrete: l, ...st });
+    }
+  }
+  return lista.sort((a, b) => a.faltam - b.faltam);
+}
+const corStatusLembrete = (t, status) => status === "vencida" ? t.danger : status === "proxima" ? t.accent : status === "ok" ? t.primary : t.textMuted;
+const textoStatusLembrete = (st) => st.status === "vencida" ? `vencida há ${fmtKm(-st.faltam)}`
+  : st.status === "sem-referencia" ? "informe o km da última vez"
+  : `faltam ${fmtKm(st.faltam)}`;
+
 /* Categoria padrão para despesas de veículo: procura "Transporte", "Veículo", "Carro"… nas categorias de despesa ativas */
 /* Categoria/subcategoria das despesas geradas pelas OS de um veículo:
    1) o que estiver configurado no próprio veículo (Editar veículo → "Classificação das despesas");
@@ -6391,9 +6496,10 @@ function gerarTransacoesOS(os, veiculo) {
   return { grupoId, transacoes };
 }
 
-const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
+const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculoInicialId }) {
   const [modalVeiculo, setModalVeiculo] = useState(null); // {} novo | {dado} editar
-  const [veiculoAbertoId, setVeiculoAbertoId] = useState(null);
+  const [veiculoAbertoId, setVeiculoAbertoId] = useState(veiculoInicialId || null);
+  useEffect(() => { if (veiculoInicialId) setVeiculoAbertoId(veiculoInicialId); }, [veiculoInicialId]);
   const [osAberta, setOsAberta] = useState(null); // { dado } | { novo: true, tipo }
 
   const veiculos = db.veiculos || [];
@@ -6448,6 +6554,35 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
     setOsAberta((cur) => cur?.dado?.id === osId ? { ...cur, dado: { ...cur.dado, anexos } } : cur);
   };
 
+  /* Lembretes marcados numa OS já salva (inclusive lançada) são gravados na hora */
+  const atualizarLembretesOS = (osId, lembretesRealizados) => {
+    const os = ordens.find((o) => o.id === osId);
+    if (!os) return;
+    const veiculo = veiculos.find((v) => v.id === os.veiculoId);
+    const nomes = (veiculo?.lembretes || []).filter((l) => lembretesRealizados.includes(l.id)).map((l) => l.nome).join(", ");
+    onChange({ ...db, ordensServico: ordens.map((o) => o.id === osId ? { ...o, lembretesRealizados } : o) }, { tipoOperacao: "edição", entidade: "Ordem de Serviço", entidadeId: osId, detalhe: `${fmtNumeroOS(os.numero)} — manutenções realizadas: ${nomes || "nenhuma"}` });
+    setOsAberta((cur) => cur?.dado?.id === osId ? { ...cur, dado: { ...cur.dado, lembretesRealizados } } : cur);
+  };
+
+  /* ---------- Lembretes de manutenção e leituras de km ---------- */
+  const atualizarVeiculo = (veiculoId, mudar, detalhe) => {
+    const v = veiculos.find((x) => x.id === veiculoId);
+    if (!v) return;
+    onChange({ ...db, veiculos: veiculos.map((x) => x.id === veiculoId ? mudar(x) : x) }, { tipoOperacao: "edição", entidade: "Veículo", entidadeId: veiculoId, detalhe: `${v.nome} — ${detalhe}` });
+  };
+  const salvarLembrete = (veiculoId, lembrete) => {
+    const existe = !!lembrete.id;
+    const registro = existe ? lembrete : { ...lembrete, id: uid(), ativo: true, criadoEm: nowISO() };
+    atualizarVeiculo(veiculoId, (v) => ({ ...v, lembretes: existe ? (v.lembretes || []).map((l) => l.id === registro.id ? { ...l, ...registro } : l) : [...(v.lembretes || []), registro] }),
+      `lembrete ${existe ? "editado" : "criado"}: ${registro.nome} a cada ${fmtKm(registro.intervaloKm)}`);
+  };
+  const removerLembrete = (veiculoId, lembrete) => {
+    atualizarVeiculo(veiculoId, (v) => ({ ...v, lembretes: (v.lembretes || []).filter((l) => l.id !== lembrete.id) }), `lembrete removido: ${lembrete.nome}`);
+  };
+  const registrarLeituraKm = (veiculoId, leitura) => {
+    atualizarVeiculo(veiculoId, (v) => ({ ...v, leiturasKm: [...(v.leiturasKm || []), { ...leitura, id: uid(), criadoEm: nowISO() }] }), `km atualizado para ${fmtKm(leitura.km)}`);
+  };
+
   /* Cancela a OS: despesas ainda pendentes geradas por ela são canceladas; as já pagas ficam como estão */
   /* Exclui a OS de vez: some da lista do veículo, as despesas geradas por ela saem de Transações
      (inclusive parcelas já pagas) e os anexos são apagados do armazenamento. Fica registrado na Auditoria. */
@@ -6496,6 +6631,7 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
           onCancelarOS={cancelarOS}
           onExcluirOS={excluirOS}
           onAtualizarAnexos={atualizarAnexosOS}
+          onAtualizarLembretes={atualizarLembretesOS}
         />
       )}
     </>
@@ -6511,6 +6647,9 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
           onAlternarStatus={() => alternarStatusVeiculo(veiculoAberto)}
           onNovaOS={(tipo) => setOsAberta({ veiculoId: veiculoAberto.id, tipo })}
           onAbrirOS={(os) => setOsAberta({ dado: os })}
+          onSalvarLembrete={(l) => salvarLembrete(veiculoAberto.id, l)}
+          onRemoverLembrete={(l) => removerLembrete(veiculoAberto.id, l)}
+          onRegistrarKm={(leitura) => registrarLeituraKm(veiculoAberto.id, leitura)}
         />
         {modais}
       </>
@@ -6570,6 +6709,18 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
                   <MiniStat t={t} label="Manutenção" valor={fmtBRL(r.manutencao)} />
                   <MiniStat t={t} label="Documentos" valor={fmtBRL(r.documentos)} />
                 </div>
+                {(() => {
+                  const kmV = kmAtualVeiculo(db, v);
+                  const pend = (v.lembretes || []).filter((l) => l.ativo !== false).map((l) => ({ l, st: statusLembrete(db, v, l, kmV) })).filter((x) => x.st.status === "proxima" || x.st.status === "vencida");
+                  if (!kmV && !pend.length) return null;
+                  const vencida = pend.some((x) => x.st.status === "vencida");
+                  return (
+                    <div style={{ fontSize: 11, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <span style={{ color: t.textMuted, display: "flex", alignItems: "center", gap: 4 }}><Gauge size={11} />{kmV ? fmtKm(kmV) : "km não informado"}</span>
+                      {pend.length > 0 && <span style={{ color: vencida ? t.danger : t.accent, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}><Bell size={11} />{pend.length} manutenç{pend.length > 1 ? "ões" : "ão"} {vencida ? "vencida(s)" : "próxima(s)"}</span>}
+                    </div>
+                  );
+                })()}
                 <div style={{ fontSize: 11, color: t.textMuted, paddingTop: 8, borderTop: `1px dashed ${t.border}`, display: "flex", justifyContent: "space-between", gap: 8 }}>
                   <span>{r.qtd} OS{r.ultima ? ` · última em ${dataBR(r.ultima.data)}` : ""}</span>
                   {r.abertas > 0 && <span style={{ color: t.accent, fontWeight: 600 }}>{r.abertas} aberta{r.abertas > 1 ? "s" : ""}</span>}
@@ -6584,7 +6735,151 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange }) {
   );
 });
 
-function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternarStatus, onNovaOS, onAbrirOS }) {
+/* Painel "Lembretes de manutenção" dentro do detalhe do veículo */
+function PainelLembretes({ t, db, veiculo, onSalvarLembrete, onRemoverLembrete, onRegistrarKm }) {
+  const [modalLembrete, setModalLembrete] = useState(null); // {} novo | { dado }
+  const [modalKm, setModalKm] = useState(false);
+  const [removendoId, setRemovendoId] = useState(null);
+  const kmAtual = kmAtualVeiculo(db, veiculo);
+  const leitura = ultimaLeituraVeiculo(db, veiculo);
+  const lembretes = (veiculo.lembretes || []).map((l) => ({ l, st: statusLembrete(db, veiculo, l, kmAtual) }));
+  const ordemStatus = { vencida: 0, proxima: 1, "sem-referencia": 2, ok: 3 };
+  lembretes.sort((a, b) => (ordemStatus[a.st.status] - ordemStatus[b.st.status]) || ((a.st.faltam ?? 1e12) - (b.st.faltam ?? 1e12)));
+
+  return (
+    <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 16, boxShadow: t.shadow, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}><Bell size={15} color={t.primary} /> Lembretes de manutenção</div>
+          <div style={{ fontSize: 12, color: t.textMuted, marginTop: 3, display: "flex", alignItems: "center", gap: 5 }}>
+            <Gauge size={12} /> Km atual: <strong className="mono" style={{ color: t.text }}>{kmAtual ? fmtKm(kmAtual) : "não informado"}</strong>
+            {leitura && <span>· {leitura.origem}{leitura.data ? ` em ${dataBR(leitura.data)}` : ""}</span>}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => setModalKm(true)} style={btnGhost(t)}><Gauge size={14} /> Atualizar km</button>
+          <button onClick={() => setModalLembrete({})} style={btnPrimary(t)}><Plus size={14} /> Lembrete</button>
+        </div>
+      </div>
+
+      {lembretes.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: t.textMuted, padding: "6px 0 2px", lineHeight: 1.5 }}>
+          Nenhum lembrete ainda. Crie um (ex.: <strong>Troca de óleo a cada 10.000 km</strong>) e o sistema avisa no Dashboard quando faltar 2.000 km, acompanhando o km das OS e das atualizações manuais.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 10 }}>
+          {lembretes.map(({ l, st }) => {
+            const cor = corStatusLembrete(t, st.status);
+            return (
+              <div key={l.id} style={{ border: `1px solid ${st.status === "ok" || st.status === "sem-referencia" ? t.border : `${cor}70`}`, background: st.status === "vencida" || st.status === "proxima" ? `${cor}0D` : "transparent", borderRadius: 11, padding: "11px 12px", opacity: l.ativo === false ? 0.5 : 1 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{l.nome}</div>
+                    <div style={{ fontSize: 11, color: t.textMuted }}>a cada {fmtKm(l.intervaloKm)} · aviso {fmtKm(st.antecedencia)} antes{l.ativo === false ? " · pausado" : ""}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    <IconBtn t={t} title="Editar lembrete" onClick={() => setModalLembrete({ dado: l })}><Pencil size={12} /></IconBtn>
+                    {removendoId === l.id
+                      ? <button onClick={() => { onRemoverLembrete(l); setRemovendoId(null); }} style={{ ...btnGhost(t), padding: "4px 8px", fontSize: 11, color: t.danger, borderColor: t.danger }}>Remover?</button>
+                      : <IconBtn t={t} title="Remover lembrete" danger onClick={() => setRemovendoId(l.id)}><Trash2 size={12} /></IconBtn>}
+                  </div>
+                </div>
+                <div style={{ height: 6, borderRadius: 4, background: t.surfaceAlt, border: `1px solid ${t.border}`, overflow: "hidden", margin: "10px 0 6px" }}>
+                  <div style={{ width: `${st.pct}%`, height: "100%", background: cor }} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11.5 }}>
+                  <span style={{ color: cor, fontWeight: 700 }}>{textoStatusLembrete(st)}</span>
+                  {st.proxima != null && <span className="mono" style={{ color: t.textMuted }}>próxima: {fmtKm(st.proxima)}</span>}
+                </div>
+                {st.ultima && <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 3 }}>Última: {fmtKm(st.ultima.km)}{st.ultima.os ? ` · ${fmtNumeroOS(st.ultima.os.numero)} em ${dataBR(st.ultima.data)}` : " · informado no cadastro"}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {modalLembrete && <ModalLembrete t={t} dado={modalLembrete.dado} kmAtual={kmAtual} existentes={veiculo.lembretes || []} onClose={() => setModalLembrete(null)} onSave={(l) => { onSalvarLembrete(l); setModalLembrete(null); }} />}
+      {modalKm && <ModalLeituraKm t={t} kmAtual={kmAtual} onClose={() => setModalKm(false)} onSave={(leituraNova) => { onRegistrarKm(leituraNova); setModalKm(false); }} />}
+    </div>
+  );
+}
+
+function ModalLembrete({ t, dado, kmAtual, existentes, onClose, onSave }) {
+  const [nome, setNome] = useState(dado?.nome || "");
+  const [intervaloKm, setIntervaloKm] = useState(dado?.intervaloKm ?? "");
+  const [antecedenciaKm, setAntecedenciaKm] = useState(dado?.antecedenciaKm ?? 2000);
+  const [kmUltima, setKmUltima] = useState(dado?.kmUltima ?? "");
+  const [ativo, setAtivo] = useState(dado ? dado.ativo !== false : true);
+  const sugestoes = LEMBRETES_SUGERIDOS.filter((s) => !existentes.some((e) => normalizarNomeCategoria(e.nome) === normalizarNomeCategoria(s.nome)));
+  const valido = nome.trim() && Number(intervaloKm) > 0;
+  const soDigitos = (v) => String(v).replace(/\D/g, "");
+  return (
+    <ModalShell t={t} title={dado ? "Editar lembrete" : "Novo lembrete de manutenção"} onClose={onClose} maxWidth={420}>
+      {!dado && sugestoes.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+          {sugestoes.map((s) => (
+            <button key={s.nome} type="button" onClick={() => { setNome(s.nome); setIntervaloKm(s.intervaloKm); }} style={{ padding: "4px 9px", borderRadius: 7, border: `1px solid ${nome === s.nome ? t.primary : t.border}`, background: nome === s.nome ? `${t.primary}18` : "transparent", color: t.text, fontSize: 11 }}>
+              {s.nome} · {(s.intervaloKm / 1000).toLocaleString("pt-BR")} mil
+            </button>
+          ))}
+        </div>
+      )}
+      <Field label="Manutenção" t={t} icon={<Wrench size={14} />}>
+        <input value={nome} onChange={(e) => setNome(e.target.value)} style={inputStyle(t)} placeholder="Ex: Troca de óleo" autoFocus={!dado} />
+      </Field>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <Field label="Fazer a cada (km)" t={t} icon={<Repeat size={14} />}>
+          <input inputMode="numeric" value={intervaloKm} onChange={(e) => setIntervaloKm(soDigitos(e.target.value))} style={inputStyle(t)} placeholder="10000" />
+        </Field>
+        <Field label="Avisar antes (km)" t={t} icon={<Bell size={14} />}>
+          <input inputMode="numeric" value={antecedenciaKm} onChange={(e) => setAntecedenciaKm(soDigitos(e.target.value))} style={inputStyle(t)} placeholder="2000" />
+        </Field>
+      </div>
+      <Field label="Km da última vez que foi feita (opcional)" t={t} icon={<Gauge size={14} />}>
+        <input inputMode="numeric" value={kmUltima} onChange={(e) => setKmUltima(soDigitos(e.target.value))} style={inputStyle(t)} placeholder={kmAtual ? `Ex: ${kmAtual}` : "Ex: 85000"} />
+      </Field>
+      <p style={{ fontSize: 11, color: t.textMuted, margin: "-6px 0 14px", lineHeight: 1.5 }}>
+        Daqui pra frente, basta marcar “{nome.trim() || "esta manutenção"}” na OS em que ela for feita — o km daquela OS passa a ser a nova referência.
+        {kmUltima === "" && " Sem o km da última vez, o lembrete só começa a contar a partir da primeira OS marcada."}
+      </p>
+      {dado && (
+        <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer", marginBottom: 14 }}>
+          <input type="checkbox" checked={ativo} onChange={(e) => setAtivo(e.target.checked)} /> Lembrete ativo (desmarque para pausar os avisos)
+        </label>
+      )}
+      <button disabled={!valido} onClick={() => onSave({ ...(dado || {}), nome: nome.trim(), intervaloKm: Number(intervaloKm), antecedenciaKm: antecedenciaKm === "" ? 2000 : Number(antecedenciaKm), kmUltima: kmUltima === "" ? null : Number(kmUltima), ativo })} style={{ ...btnPrimary(t), width: "100%", justifyContent: "center", opacity: valido ? 1 : 0.6 }}>
+        <Check size={15} /> Salvar lembrete
+      </button>
+    </ModalShell>
+  );
+}
+
+function ModalLeituraKm({ t, kmAtual, onClose, onSave }) {
+  const [km, setKm] = useState("");
+  const [data, setData] = useState(hojeISO());
+  const n = Number(km) || 0;
+  const menor = n > 0 && n < kmAtual;
+  return (
+    <ModalShell t={t} title="Atualizar quilometragem" onClose={onClose}>
+      <p style={{ fontSize: 12.5, color: t.textMuted, marginBottom: 12, lineHeight: 1.5 }}>
+        Informe o que o hodômetro está marcando agora. Serve pra acompanhar os lembretes entre uma OS e outra.
+        {kmAtual > 0 && <> Último km registrado: <strong className="mono" style={{ color: t.text }}>{fmtKm(kmAtual)}</strong>.</>}
+      </p>
+      <Field label="Km no hodômetro" t={t} icon={<Gauge size={14} />}>
+        <input inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value.replace(/\D/g, ""))} style={inputStyle(t)} placeholder={kmAtual ? String(kmAtual) : "0"} autoFocus />
+      </Field>
+      <Field label="Data da leitura" t={t} icon={<Calendar size={14} />}>
+        <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={inputStyle(t)} />
+      </Field>
+      {menor && <p style={{ fontSize: 11.5, color: t.accent, margin: "-6px 0 12px" }}>Esse valor é menor que o último km registrado ({fmtKm(kmAtual)}) — confira o número.</p>}
+      <button disabled={!n || !data} onClick={() => onSave({ km: n, data })} style={{ ...btnPrimary(t), width: "100%", justifyContent: "center", opacity: n && data ? 1 : 0.6 }}>
+        <Check size={15} /> Salvar km
+      </button>
+    </ModalShell>
+  );
+}
+
+function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternarStatus, onNovaOS, onAbrirOS, onSalvarLembrete, onRemoverLembrete, onRegistrarKm }) {
   const [filtroTipo, setFiltroTipo] = useState("todas");
   const [dataIni, setDataIni] = useState("");
   const [dataFim, setDataFim] = useState("");
@@ -6641,6 +6936,8 @@ function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternar
           <MiniStat t={t} label="OS abertas" valor={resumo.abertas} destaque={resumo.abertas > 0} />
         </div>
       </div>
+
+      <PainelLembretes t={t} db={db} veiculo={veiculo} onSalvarLembrete={onSalvarLembrete} onRemoverLembrete={onRemoverLembrete} onRegistrarKm={onRegistrarKm} />
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 6 }}>
@@ -6884,7 +7181,31 @@ async function gerarPdfOS({ os, veiculo, origemNome, origemTipo, categoriaNome, 
 
 const novoItemOS = () => ({ id: uid(), item: "", descricao: "", qtd: 1, precoUnit: 0 });
 
-function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximoNumero, onClose, onSalvar, onCancelarOS, onExcluirOS, onAtualizarAnexos }) {
+/* Checkboxes "Manutenções realizadas nesta OS" — zeram a contagem dos lembretes marcados a partir do km da OS */
+function LembretesRealizadosOS({ t, veiculo, selecionados, km, onChange }) {
+  const lembretes = (veiculo?.lembretes || []).filter((l) => l.ativo !== false || selecionados.includes(l.id));
+  if (!lembretes.length) return null;
+  const alternar = (id) => onChange(selecionados.includes(id) ? selecionados.filter((x) => x !== id) : [...selecionados, id]);
+  return (
+    <div style={{ border: `1px solid ${t.border}`, borderRadius: 12, padding: 12, marginTop: 12 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><Bell size={14} /> Manutenções realizadas nesta OS</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {lembretes.map((l) => {
+          const on = selecionados.includes(l.id);
+          return (
+            <label key={l.id} style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 10px", borderRadius: 8, border: `1px solid ${on ? t.primary : t.border}`, background: on ? `${t.primary}14` : "transparent", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              <input type="checkbox" checked={on} onChange={() => alternar(l.id)} /> {l.nome}
+            </label>
+          );
+        })}
+      </div>
+      {selecionados.length > 0 && !(Number(km) > 0) && <div style={{ fontSize: 11.5, color: t.accent, marginTop: 8 }}>Preencha o <strong>Km atual</strong> da OS — é dele que a contagem recomeça.</div>}
+      {selecionados.length > 0 && Number(km) > 0 && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>A contagem desses lembretes recomeça em {fmtKm(km)}.</div>}
+    </div>
+  );
+}
+
+function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximoNumero, onClose, onSalvar, onCancelarOS, onExcluirOS, onAtualizarAnexos, onAtualizarLembretes }) {
   const somenteLeitura = dado && dado.status !== "aberta";
   const [osId] = useState(() => dado?.id || uid()); // id já reservado pra OS nova, usado na pasta dos anexos
   const [anexos, setAnexos] = useState(dado?.anexos || []);
@@ -6894,6 +7215,11 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
   const [tipo, setTipo] = useState(dado?.tipo || tipoInicial || "Manutenção");
   const [data, setData] = useState(dado?.data || hojeISO());
   const [km, setKm] = useState(dado?.km || "");
+  const [lembretesRealizados, setLembretesRealizados] = useState(dado?.lembretesRealizados || []);
+  const mudarLembretes = (lista) => {
+    setLembretesRealizados(lista);
+    if (dado && dado.status !== "aberta") onAtualizarLembretes(dado.id, lista); // OS lançada: grava na hora
+  };
   const [oficina, setOficina] = useState(dado?.oficina || "");
   const [observacao, setObservacao] = useState(dado?.observacao || "");
   const [itens, setItens] = useState(dado?.itens?.length ? dado.itens : [novoItemOS()]);
@@ -6956,7 +7282,7 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
   };
 
   const montar = () => ({
-    id: osId, veiculoId, tipo, data, km, anexos, oficina: oficina.trim(), observacao: observacao.trim(),
+    id: osId, veiculoId, tipo, data, km, anexos, lembretesRealizados: lembretesRealizados.filter((id) => ((db.veiculos || []).find((v) => v.id === veiculoId)?.lembretes || []).some((l) => l.id === id)), oficina: oficina.trim(), observacao: observacao.trim(),
     itens: itensValidos.map((i) => ({ ...i, item: i.item.trim(), descricao: i.descricao.trim(), qtd: Number(i.qtd) || 0, precoUnit: Number(i.precoUnit) || 0 })),
     pagamento: { origemTipo, origemId, parcelas: nParcelas, vencimento, categoriaId: categoriaId || null, subcategoriaId: subcategoriaId || null, jaPaga: origemTipo === "conta" && jaPaga }
   });
@@ -7110,6 +7436,10 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
           </div>
         </div>
       </fieldset>
+
+      {tipo === "Manutenção" && dado?.status !== "cancelada" && (
+        <LembretesRealizadosOS t={t} veiculo={(db.veiculos || []).find((v) => v.id === veiculoId)} selecionados={lembretesRealizados} km={km} onChange={mudarLembretes} />
+      )}
 
       <AnexosOS t={t} osId={osId} anexos={anexos} onChange={mudarAnexos} />
 
@@ -7723,6 +8053,8 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [authUser, setAuthUser] = useState(null); // usuário retornado pelo Supabase Auth (id, email)
   const [route, setRoute] = useState("dashboard");
+  const [veiculoFocoId, setVeiculoFocoId] = useState(null); // veículo a abrir direto ao clicar num lembrete do Dashboard
+  useEffect(() => { if (route !== "veiculos") setVeiculoFocoId(null); }, [route]);
   const [intentTransacao, setIntentTransacao] = useState(null); // 'Receita' | 'Despesa' | null
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -8000,6 +8332,7 @@ export default function App() {
               onNovaTransacao={(tipo) => { setIntentTransacao(tipo); setRoute("transacoes"); }}
               onVerTransacoes={() => setRoute("transacoes")}
               onVerMetas={() => setRoute("metas")}
+              onVerVeiculo={(id) => { setVeiculoFocoId(id); setRoute("veiculos"); }}
             />
           )}
           {route === "contas" && (
@@ -8058,6 +8391,7 @@ export default function App() {
             <VeiculosView
               t={t} db={db}
               onChange={persistComAuditoria}
+              veiculoInicialId={veiculoFocoId}
             />
           )}
           {route === "auditoria" && <AuditoriaView t={t} db={db} />}
