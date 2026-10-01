@@ -267,6 +267,26 @@ function valorAplicadoNaData(ativo, dataLimite) {
     .filter((m) => m.data && m.data <= dataLimite)
     .reduce((s, m) => s + (m.tipo === "aporte" ? (Number(m.valor) || 0) : -(Number(m.valor) || 0)), 0);
 }
+/* Rendimento real de um ativo no período (fimAnterior, fimAtual]:
+   ganho = saldo atualizado no fim − saldo atualizado anterior − (aportes − resgates feitos entre essas duas atualizações).
+   Ex.: saldo 1,00 em 30/08, aporte de 2,00 em 05/09, saldo 3,50 em 30/09 → ganho = 3,50 − 1,00 − 2,00 = 0,50.
+   Se o saldo do ativo não foi atualizado dentro do período, o rendimento dele no período é 0 (ainda sem informação),
+   e os aportes feitos são considerados no mês em que o saldo for atualizado. */
+function rendimentoAtivoNoPeriodo(ativo, fimAnterior, fimAtual) {
+  const regs = registrosOrdenados(ativo);
+  const regsFim = regs.filter((r) => r.data <= fimAtual);
+  if (!regsFim.length) return 0;
+  const regFim = regsFim[regsFim.length - 1];
+  if (regFim.data <= fimAnterior) return 0; // saldo não atualizado neste período
+  const regsIni = regs.filter((r) => r.data <= fimAnterior);
+  const regIni = regsIni.length ? regsIni[regsIni.length - 1] : null;
+  const dataIni = regIni ? regIni.data : "";
+  const saldoIni = regIni ? Number(regIni.saldo) || 0 : 0;
+  const fluxo = (ativo.movimentos || [])
+    .filter((m) => m.data && m.data > dataIni && m.data <= regFim.data)
+    .reduce((s, m) => s + (m.tipo === "aporte" ? (Number(m.valor) || 0) : -(Number(m.valor) || 0)), 0);
+  return (Number(regFim.saldo) || 0) - saldoIni - fluxo;
+}
 function ultimaAtualizacaoAtivo(ativo) {
   const datas = [
     ...(ativo.registros || []).map((r) => r.data),
@@ -2335,6 +2355,13 @@ function addPeriodoISO(dateStr, i, freq) {
   return dateStr; // Única
 }
 const hojeISO = () => new Date().toISOString().slice(0, 10);
+/* Data padrão do registro de saldo de ativos: último dia do mês (horário local).
+   Nos 5 primeiros dias do mês sugere o último dia do mês anterior (atualização feita com atraso). */
+const fimMesReferenciaISO = () => {
+  const h = new Date();
+  const u = h.getDate() <= 5 ? new Date(h.getFullYear(), h.getMonth(), 0) : new Date(h.getFullYear(), h.getMonth() + 1, 0);
+  return `${u.getFullYear()}-${String(u.getMonth() + 1).padStart(2, "0")}-${String(u.getDate()).padStart(2, "0")}`;
+};
 const dataBR = (iso) => iso ? iso.split("-").reverse().join("/") : "—";
 const FREQUENCIAS = ["Única", "Semanal", "Quinzenal", "Mensal", "Anual"];
 
@@ -5061,7 +5088,8 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
   const totalAtual = ativosAtivos.reduce((s, a) => s + saldoAtivoNaData(a, fimMesAtual), 0);
   const totalAnterior = ativosAtivos.reduce((s, a) => s + saldoAtivoNaData(a, fimMesAnterior), 0);
   const variacaoCarteira = totalAnterior > 0 ? ((totalAtual - totalAnterior) / totalAnterior) * 100 : null;
-  const rendimentoMes = totalAtual - totalAnterior;
+  // Rendimento = valorização real (desconta aportes e soma resgates feitos no mês)
+  const rendimentoMes = ativosAtivos.reduce((s, a) => s + rendimentoAtivoNoPeriodo(a, fimMesAnterior, fimMesAtual), 0);
   const grauIndependencia = metaRendaMensal > 0 ? (rendimentoMes / metaRendaMensal) * 100 : null;
 
   // Rendimento (R$) e Grau (%) nos últimos 12 meses
@@ -5070,9 +5098,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
     const fimA = fimMes(d.getFullYear(), d.getMonth());
     const dAnt = new Date(d.getFullYear(), d.getMonth() - 1, 1);
     const fimAnt = fimMes(dAnt.getFullYear(), dAnt.getMonth());
-    const totA = ativosAtivos.reduce((s, a) => s + saldoAtivoNaData(a, fimA), 0);
-    const totAnt = ativosAtivos.reduce((s, a) => s + saldoAtivoNaData(a, fimAnt), 0);
-    const rendimento = totA - totAnt;
+    const rendimento = ativosAtivos.reduce((s, a) => s + rendimentoAtivoNoPeriodo(a, fimAnt, fimA), 0);
     const grau = metaRendaMensal > 0 ? Math.round((rendimento / metaRendaMensal) * 100) : null;
     return { mes: `${MESES[d.getMonth()]} ${d.getFullYear()}`, rendimento, grau };
   });
@@ -5702,7 +5728,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
 
 function AtivoDetalhe({ t, ativo, permiteDeletar, onVoltar, onRegistrarSaldo, onRegistrarMovimento, onExcluirRegistroSaldo, onExcluirMovimento, onEditar, onAlternarStatus, onExcluir }) {
   const [centavos, setCentavos] = useState(0);
-  const [data, setData] = useState(hojeISO());
+  const [data, setData] = useState(fimMesReferenciaISO());
   const [tipoMov, setTipoMov] = useState("aporte");
   const [centavosMov, setCentavosMov] = useState(0);
   const [dataMov, setDataMov] = useState(hojeISO());
@@ -6244,6 +6270,7 @@ const totalOS = (os) => Math.round((os.itens || []).reduce((s, it) => s + totalI
 const STATUS_OS = {
   aberta: { label: "Aberta", cor: (t) => t.accent },
   lancada: { label: "Lançada", cor: (t) => t.primary },
+  registrada: { label: "Só registro", cor: () => "#7C5CC4" }, // OS sem contas a pagar (já paga / só histórico)
   cancelada: { label: "Cancelada", cor: (t) => t.textMuted }
 };
 
@@ -6531,7 +6558,11 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
     let registro = { ...existente, ...os, id: existente?.id || os.id || uid(), numero, criadoEm: existente?.criadoEm || nowISO(), status: existente?.status || "aberta" };
     let next = { ...db };
     let detalhe = `${fmtNumeroOS(numero)} — ${fmtBRL(totalOS(registro))}`;
-    if (lancar) {
+    if (lancar && registro.semFinanceiro) {
+      // OS só para registro: fica no histórico do veículo, mas NÃO gera despesa em Transações
+      registro = { ...registro, status: "registrada", registradaEm: nowISO() };
+      detalhe += " registrada sem gerar contas a pagar";
+    } else if (lancar) {
       const veiculo = veiculos.find((v) => v.id === registro.veiculoId);
       const { grupoId, transacoes } = gerarTransacoesOS(registro, veiculo);
       registro = { ...registro, status: "lancada", grupoTransacoes: grupoId, lancadaEm: nowISO() };
@@ -6611,7 +6642,7 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
 
   const resumoVeiculo = (v) => {
     const doVeiculo = ordens.filter((o) => o.veiculoId === v.id && o.status !== "cancelada");
-    const soma = (tipo) => doVeiculo.filter((o) => o.tipo === tipo && o.status === "lancada").reduce((s, o) => s + totalOS(o), 0);
+    const soma = (tipo) => doVeiculo.filter((o) => o.tipo === tipo && (o.status === "lancada" || o.status === "registrada")).reduce((s, o) => s + totalOS(o), 0);
     const ultima = [...doVeiculo].sort((a, b) => (b.data || "").localeCompare(a.data || ""))[0];
     return { manutencao: soma("Manutenção"), documentos: soma("Documento"), abertas: doVeiculo.filter((o) => o.status === "aberta").length, qtd: doVeiculo.length, ultima };
   };
@@ -6658,7 +6689,7 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
 
   const ativos = veiculos.filter((v) => v.status !== "inativo");
   const anoAtual = String(new Date().getFullYear());
-  const gastoAno = ordens.filter((o) => o.status === "lancada" && (o.data || "").startsWith(anoAtual)).reduce((s, o) => s + totalOS(o), 0);
+  const gastoAno = ordens.filter((o) => (o.status === "lancada" || o.status === "registrada") && (o.data || "").startsWith(anoAtual)).reduce((s, o) => s + totalOS(o), 0);
   const abertasTotal = ordens.filter((o) => o.status === "aberta").length;
 
   return (
@@ -7128,12 +7159,18 @@ async function gerarPdfOS({ os, veiculo, origemNome, origemTipo, categoriaNome, 
   garantirEspaco(40);
   doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(0); doc.text("Pagamento", M, y); y += 6;
   doc.setFont("helvetica", "normal");
+  if (os.semFinanceiro) {
+    campo("Pago com", origemNome ? `${origemNome} (${origemTipo === "cartao" ? "cartão de crédito" : "conta"})` : "Não informado", M);
+    campo("Lançamento financeiro", "Não gera contas a pagar (só registro)", col2);
+    y += 16;
+  } else {
   campo("Pago com", origemNome ? `${origemNome} (${origemTipo === "cartao" ? "cartão de crédito" : "conta"})` : "Não definido", M);
   campo("Condição", parcelas > 1 ? `${parcelas}x de ${fmtBRL(total / parcelas)}` : "À vista", col2);
   y += 13;
   campo(parcelas > 1 ? "1º vencimento" : "Vencimento", dataBR(pg.vencimento), M);
   campo("Categoria", categoriaNome ? `${categoriaNome}${subcategoriaNome ? ` › ${subcategoriaNome}` : ""}` : "—", col2);
   y += 16;
+  }
 
   if (transacoes && transacoes.length) {
     autoTable(doc, {
@@ -7248,6 +7285,7 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
     onClose();
   };
   const [jaPaga, setJaPaga] = useState(!!pg0.jaPaga);
+  const [semFinanceiro, setSemFinanceiro] = useState(!!dado?.semFinanceiro); // OS só para registro, não gera contas a pagar
   const [confirmarCancelar, setConfirmarCancelar] = useState(false);
   const [confirmarExcluir, setConfirmarExcluir] = useState(false);
   const [textoExcluir, setTextoExcluir] = useState("");
@@ -7264,6 +7302,7 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
   const itensValidos = itens.filter((i) => i.item.trim() && totalItemOS(i) > 0);
   const podeSalvar = veiculoId && data && itensValidos.length > 0;
   const podeLancar = podeSalvar && origemTipo && vencimento && total > 0;
+  const podeRegistrar = podeSalvar && total > 0;
 
   const atualizarItem = (id, campo, valor) => setItens((arr) => arr.map((i) => i.id === id ? { ...i, [campo]: valor } : i));
   const removerItem = (id) => setItens((arr) => arr.length > 1 ? arr.filter((i) => i.id !== id) : [novoItemOS()]);
@@ -7282,9 +7321,9 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
   };
 
   const montar = () => ({
-    id: osId, veiculoId, tipo, data, km, anexos, lembretesRealizados: lembretesRealizados.filter((id) => ((db.veiculos || []).find((v) => v.id === veiculoId)?.lembretes || []).some((l) => l.id === id)), oficina: oficina.trim(), observacao: observacao.trim(),
+    id: osId, veiculoId, tipo, data, km, anexos, semFinanceiro, lembretesRealizados: lembretesRealizados.filter((id) => ((db.veiculos || []).find((v) => v.id === veiculoId)?.lembretes || []).some((l) => l.id === id)), oficina: oficina.trim(), observacao: observacao.trim(),
     itens: itensValidos.map((i) => ({ ...i, item: i.item.trim(), descricao: i.descricao.trim(), qtd: Number(i.qtd) || 0, precoUnit: Number(i.precoUnit) || 0 })),
-    pagamento: { origemTipo, origemId, parcelas: nParcelas, vencimento, categoriaId: categoriaId || null, subcategoriaId: subcategoriaId || null, jaPaga: origemTipo === "conta" && jaPaga }
+    pagamento: { origemTipo, origemId, parcelas: nParcelas, vencimento, categoriaId: categoriaId || null, subcategoriaId: subcategoriaId || null, jaPaga: !semFinanceiro && origemTipo === "conta" && jaPaga }
   });
 
   const numeroExibido = dado ? dado.numero : proximoNumero;
@@ -7395,6 +7434,27 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
         {/* ---------- PAGAMENTO ---------- */}
         <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: "14px 14px 2px", marginTop: 4 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}><Wallet size={14} /> Pagamento</div>
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 12px", marginBottom: 12, borderRadius: 10, cursor: somenteLeitura ? "default" : "pointer", border: `1px solid ${semFinanceiro ? "#7C5CC4" : t.border}`, background: semFinanceiro ? "#7C5CC41A" : t.surface }}>
+            <input type="checkbox" checked={semFinanceiro} onChange={(e) => setSemFinanceiro(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>
+              <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: t.text }}>Esta OS não gera contas a pagar</span>
+              <span style={{ display: "block", fontSize: 11.5, color: t.textMuted, marginTop: 2 }}>Use quando o serviço já foi pago/lançado por fora e você só quer guardar o que foi feito no carro.</span>
+            </span>
+          </label>
+          {semFinanceiro ? (
+            <div style={{ marginBottom: 12 }}>
+              <Field label="Pago com (opcional, só informativo)" t={t} icon={origemTipo === "cartao" ? <CreditCard size={14} /> : <Wallet size={14} />}>
+                <select value={origem} onChange={(e) => setOrigem(e.target.value)} style={selectStyle(t)}>
+                  <option value="">Não informar</option>
+                  {contasAtivas.length > 0 && <optgroup label="Contas">{contasAtivas.map((c) => <option key={c.id} value={`conta:${c.id}`}>{c.nomeConta}</option>)}</optgroup>}
+                  {cartoesAtivos.length > 0 && <optgroup label="Cartões de crédito">{cartoesAtivos.map((c) => <option key={c.id} value={`cartao:${c.id}`}>{c.nome}</option>)}</optgroup>}
+                </select>
+              </Field>
+              <div style={{ fontSize: 12.5, color: t.text, display: "flex", alignItems: "center", gap: 6 }}>
+                <Ban size={13} color="#7C5CC4" /> <span><strong>Nenhuma despesa</strong> será criada em Transações — a OS fica só no histórico do veículo{total > 0 ? <> (<strong className="mono">{fmtBRL(total)}</strong> entra nos gastos do veículo)</> : ""}.</span>
+              </div>
+            </div>
+          ) : (<>
           <div className="os-grid-pg" style={{ display: "grid", gridTemplateColumns: "minmax(0,1.4fr) minmax(0,0.8fr) minmax(0,1fr)", gap: 10 }}>
             <Field label="Pagar com" t={t} icon={origemTipo === "cartao" ? <CreditCard size={14} /> : <Wallet size={14} />}>
               <select value={origem} onChange={(e) => escolherOrigem(e.target.value)} style={selectStyle(t)}>
@@ -7434,6 +7494,7 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
               </label>
             )}
           </div>
+          </>)}
         </div>
       </fieldset>
 
@@ -7461,9 +7522,15 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
             <button disabled={!podeSalvar} onClick={() => onSalvar(montar(), false)} style={{ ...btnGhost(t), flex: 1, minWidth: 150, padding: "10px 12px", fontWeight: 600, opacity: podeSalvar ? 1 : 0.5 }}>
               <Check size={14} /> Salvar OS (aberta)
             </button>
-            <button disabled={!podeLancar} onClick={() => onSalvar(montar(), true)} style={{ ...btnPrimary(t), flex: 1.4, minWidth: 190, justifyContent: "center", opacity: podeLancar ? 1 : 0.5 }}>
-              <Receipt size={15} /> Lançar despesa {total > 0 ? fmtBRL(total) : ""}
-            </button>
+            {semFinanceiro ? (
+              <button disabled={!podeRegistrar} onClick={() => onSalvar(montar(), true)} style={{ ...btnPrimary(t), background: "#7C5CC4", flex: 1.4, minWidth: 190, justifyContent: "center", opacity: podeRegistrar ? 1 : 0.5 }}>
+                <ClipboardList size={15} /> Registrar sem despesa
+              </button>
+            ) : (
+              <button disabled={!podeLancar} onClick={() => onSalvar(montar(), true)} style={{ ...btnPrimary(t), flex: 1.4, minWidth: 190, justifyContent: "center", opacity: podeLancar ? 1 : 0.5 }}>
+                <Receipt size={15} /> Lançar despesa {total > 0 ? fmtBRL(total) : ""}
+              </button>
+            )}
           </>
         )}
         <button disabled={!podeSalvar || gerandoPdf} onClick={exportarPdf} title="Baixar esta OS em PDF" style={{ ...btnGhost(t), minWidth: 130, padding: "10px 12px", fontWeight: 600, opacity: podeSalvar ? 1 : 0.5 }}>
@@ -7476,7 +7543,7 @@ function ModalOrdemServico({ t, db, dado, veiculoIdInicial, tipoInicial, proximo
           <button onClick={() => { setTextoExcluir(""); setConfirmarExcluir(true); }} title="Excluir esta OS definitivamente" style={{ ...btnGhost(t), color: t.danger, minWidth: 110 }}><Trash2 size={14} /> Excluir OS</button>
         )}
       </div>
-      {!somenteLeitura && !podeLancar && podeSalvar && <p style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>Escolha a conta ou cartão de pagamento para lançar a despesa. Enquanto isso, dá pra salvar a OS como aberta.</p>}
+      {!somenteLeitura && !semFinanceiro && !podeLancar && podeSalvar && <p style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>Escolha a conta ou cartão de pagamento para lançar a despesa. Enquanto isso, dá pra salvar a OS como aberta.</p>}
 
       {confirmarExcluir && (() => {
         const txDaOS = (db.transacoes || []).filter((tx) => tx.osId === dado.id);
