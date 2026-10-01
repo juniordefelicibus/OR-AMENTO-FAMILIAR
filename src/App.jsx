@@ -238,18 +238,27 @@ function registrosOrdenados(ativo) {
   return [...(ativo.registros || [])].sort((a, b) => a.data.localeCompare(b.data));
 }
 function saldoAtivo(ativo) {
-  const hojeStr = new Date().toISOString().slice(0, 10);
+  const hojeStr = hojeISO();
   const regs = registrosOrdenados(ativo).filter((r) => r.data <= hojeStr);
   return regs.length ? Number(regs[regs.length - 1].saldo) || 0 : 0;
 }
+/* Variação % real entre os dois últimos registros de saldo, descontando aportes/resgates feitos entre eles:
+   ganho = saldo atual − saldo anterior − (aportes − resgates)
+   %     = ganho ÷ (saldo anterior + aportes do período)
+   Ex.: 146,80 → aporte 72,00 → 217,20: ganho = −1,60 → −1,60 ÷ 218,80 = −0,73% */
 function variacaoAtivo(ativo) {
-  const hojeStr = new Date().toISOString().slice(0, 10);
+  const hojeStr = hojeISO();
   const regs = registrosOrdenados(ativo).filter((r) => r.data <= hojeStr);
   if (regs.length < 2) return null;
-  const atual = Number(regs[regs.length - 1].saldo) || 0;
-  const anterior = Number(regs[regs.length - 2].saldo) || 0;
-  if (anterior === 0) return null;
-  return ((atual - anterior) / anterior) * 100;
+  const regAtual = regs[regs.length - 1], regAnt = regs[regs.length - 2];
+  const atual = Number(regAtual.saldo) || 0;
+  const anterior = Number(regAnt.saldo) || 0;
+  const movs = (ativo.movimentos || []).filter((m) => m.data && m.data > regAnt.data && m.data <= regAtual.data);
+  const aportes = movs.filter((m) => m.tipo === "aporte").reduce((s, m) => s + (Number(m.valor) || 0), 0);
+  const resgates = movs.filter((m) => m.tipo !== "aporte").reduce((s, m) => s + (Number(m.valor) || 0), 0);
+  const base = anterior + aportes;
+  if (base <= 0) return null;
+  return ((atual - anterior - aportes + resgates) / base) * 100;
 }
 function saldoAtivoNaData(ativo, dataLimite) {
   const regs = registrosOrdenados(ativo).filter((r) => r.data <= dataLimite);
@@ -2354,7 +2363,8 @@ function addPeriodoISO(dateStr, i, freq) {
   if (freq === "Mensal") return addMonthsISO(dateStr, i);
   return dateStr; // Única
 }
-const hojeISO = () => new Date().toISOString().slice(0, 10);
+/* Data de hoje no horário LOCAL (Brasília) — toISOString() usa UTC e virava o dia seguinte depois das 21h */
+const hojeISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 /* Data padrão do registro de saldo de ativos: último dia do mês (horário local).
    Nos 5 primeiros dias do mês sugere o último dia do mês anterior (atualização feita com atraso). */
 const fimMesReferenciaISO = () => {
