@@ -237,10 +237,20 @@ function montarDebitoPagamentoFatura({ transacoesQuitadas, contaPagamentoId, dat
 function registrosOrdenados(ativo) {
   return [...(ativo.registros || [])].sort((a, b) => a.data.localeCompare(b.data));
 }
+/* Saldo estimado numa data = último saldo registrado até ela + aportes − resgates lançados DEPOIS desse registro
+   (até a data). Assim um aporte já aparece no patrimônio no dia em que é lançado, sem esperar a atualização
+   de fim de mês; quando o saldo real for registrado, ele passa a ser a nova base e substitui a estimativa.
+   Não afeta o cálculo de rendimento (detalheRendimentoAtivo), que compara só saldos registrados. */
+function estimativaSaldoAtivo(ativo, dataLimite) {
+  const regs = registrosOrdenados(ativo).filter((r) => r.data <= dataLimite);
+  const ultimo = regs.length ? regs[regs.length - 1] : null;
+  const desde = ultimo ? ultimo.data : "";
+  const movsDepois = (ativo.movimentos || []).filter((m) => m.data && m.data > desde && m.data <= dataLimite);
+  const fluxo = movsDepois.reduce((s, m) => s + (m.tipo === "aporte" ? (Number(m.valor) || 0) : -(Number(m.valor) || 0)), 0);
+  return { saldo: (ultimo ? Number(ultimo.saldo) || 0 : 0) + fluxo, estimado: movsDepois.length > 0, dataRegistro: ultimo ? ultimo.data : null, fluxo };
+}
 function saldoAtivo(ativo) {
-  const hojeStr = hojeISO();
-  const regs = registrosOrdenados(ativo).filter((r) => r.data <= hojeStr);
-  return regs.length ? Number(regs[regs.length - 1].saldo) || 0 : 0;
+  return estimativaSaldoAtivo(ativo, hojeISO()).saldo;
 }
 /* Variação % real entre os dois últimos registros de saldo, descontando aportes/resgates feitos entre eles:
    ganho = saldo atual − saldo anterior − (aportes − resgates)
@@ -261,8 +271,7 @@ function variacaoAtivo(ativo) {
   return ((atual - anterior - aportes + resgates) / base) * 100;
 }
 function saldoAtivoNaData(ativo, dataLimite) {
-  const regs = registrosOrdenados(ativo).filter((r) => r.data <= dataLimite);
-  return regs.length ? Number(regs[regs.length - 1].saldo) || 0 : 0;
+  return estimativaSaldoAtivo(ativo, dataLimite).saldo;
 }
 function totalAportadoAtivo(ativo) {
   return (ativo.movimentos || []).filter((m) => m.tipo === "aporte").reduce((s, m) => s + (Number(m.valor) || 0), 0);
@@ -5795,7 +5804,8 @@ function AtivoDetalhe({ t, ativo, permiteDeletar, onVoltar, onRegistrarSaldo, on
   const [excluindoMovimento, setExcluindoMovimento] = useState(null);
   const [excluindoRegistro, setExcluindoRegistro] = useState(null);
 
-  const saldo = saldoAtivo(ativo);
+  const estimativa = estimativaSaldoAtivo(ativo, hojeISO());
+  const saldo = estimativa.saldo;
   const variacao = variacaoAtivo(ativo);
   const historico = registrosOrdenados(ativo).slice().reverse();
   const movimentos = [...(ativo.movimentos || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
@@ -5844,9 +5854,14 @@ function AtivoDetalhe({ t, ativo, permiteDeletar, onVoltar, onRegistrarSaldo, on
           <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 2 }}>{ativo.nome} {ativo.status === "inativo" && <span style={{ fontSize: 11, color: t.textMuted, fontWeight: 500 }}>(inativo)</span>}</div>
           <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 14 }}>{ativo.tipo}</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 14 }}>
-            <MiniStat t={t} label="Saldo atual" valor={fmtBRL(saldo)} />
+            <MiniStat t={t} label={estimativa.estimado ? "Saldo atual (estimado)" : "Saldo atual"} valor={fmtBRL(saldo)} />
             <MiniStat t={t} label="Variação (última atualização)" valor={variacao == null ? "—" : `${variacao >= 0 ? "+" : ""}${variacao.toFixed(2)}%`} destaque={variacao != null && variacao >= 0} />
           </div>
+          {estimativa.estimado && (
+            <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 10 }}>
+              {estimativa.dataRegistro ? `Último saldo registrado em ${dataBR(estimativa.dataRegistro)}` : "Sem saldo registrado ainda"} {estimativa.fluxo >= 0 ? "+" : "−"} {fmtBRL(Math.abs(estimativa.fluxo))} em {estimativa.fluxo >= 0 ? "aportes" : "resgates"} lançados depois. Registre o saldo real no fim do mês para substituir a estimativa.
+            </div>
+          )}
         </div>
       </div>
 
