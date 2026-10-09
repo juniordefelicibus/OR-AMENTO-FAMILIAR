@@ -280,21 +280,35 @@ function valorAplicadoNaData(ativo, dataLimite) {
    ganho = saldo atualizado no fim − saldo atualizado anterior − (aportes − resgates feitos entre essas duas atualizações).
    Ex.: saldo 1,00 em 30/08, aporte de 2,00 em 05/09, saldo 3,50 em 30/09 → ganho = 3,50 − 1,00 − 2,00 = 0,50.
    Se o saldo do ativo não foi atualizado dentro do período, o rendimento dele no período é 0 (ainda sem informação),
-   e os aportes feitos são considerados no mês em que o saldo for atualizado. */
-function rendimentoAtivoNoPeriodo(ativo, fimAnterior, fimAtual) {
+   e os aportes feitos são considerados no mês em que o saldo for atualizado.
+   O PRIMEIRO registro de saldo de um ativo é só o ponto de partida (não é ganho): se o ativo ainda não tinha
+   saldo registrado antes do período, a base passa a ser o primeiro registro — e se o único registro do período
+   é justamente o primeiro, o rendimento é 0. Sem isso, o saldo inteiro de um ativo recém-cadastrado contava
+   como rendimento (a menos que todos os aportes anteriores estivessem lançados).
+   Retorna o detalhamento { rendimento, saldoIni, saldoFim, fluxo, dataIni, dataFim } ou null quando não há
+   informação no período. */
+function detalheRendimentoAtivo(ativo, fimAnterior, fimAtual) {
   const regs = registrosOrdenados(ativo);
   const regsFim = regs.filter((r) => r.data <= fimAtual);
-  if (!regsFim.length) return 0;
+  if (!regsFim.length) return null;
   const regFim = regsFim[regsFim.length - 1];
-  if (regFim.data <= fimAnterior) return 0; // saldo não atualizado neste período
+  if (regFim.data <= fimAnterior) return null; // saldo não atualizado neste período
   const regsIni = regs.filter((r) => r.data <= fimAnterior);
-  const regIni = regsIni.length ? regsIni[regsIni.length - 1] : null;
-  const dataIni = regIni ? regIni.data : "";
-  const saldoIni = regIni ? Number(regIni.saldo) || 0 : 0;
+  let regIni = regsIni.length ? regsIni[regsIni.length - 1] : null;
+  if (!regIni) {
+    regIni = regs[0]; // primeiro registro do ativo caiu dentro do período: vira a base
+    if (regIni === regFim) return null; // único registro no período é o primeiro → só ponto de partida
+  }
+  const dataIni = regIni.data;
+  const saldoIni = Number(regIni.saldo) || 0;
+  const saldoFim = Number(regFim.saldo) || 0;
   const fluxo = (ativo.movimentos || [])
     .filter((m) => m.data && m.data > dataIni && m.data <= regFim.data)
     .reduce((s, m) => s + (m.tipo === "aporte" ? (Number(m.valor) || 0) : -(Number(m.valor) || 0)), 0);
-  return (Number(regFim.saldo) || 0) - saldoIni - fluxo;
+  return { rendimento: saldoFim - saldoIni - fluxo, saldoIni, saldoFim, fluxo, dataIni, dataFim: regFim.data };
+}
+function rendimentoAtivoNoPeriodo(ativo, fimAnterior, fimAtual) {
+  return detalheRendimentoAtivo(ativo, fimAnterior, fimAtual)?.rendimento || 0;
 }
 function ultimaAtualizacaoAtivo(ativo) {
   const datas = [
@@ -5100,6 +5114,12 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
   const variacaoCarteira = totalAnterior > 0 ? ((totalAtual - totalAnterior) / totalAnterior) * 100 : null;
   // Rendimento = valorização real (desconta aportes e soma resgates feitos no mês)
   const rendimentoMes = ativosAtivos.reduce((s, a) => s + rendimentoAtivoNoPeriodo(a, fimMesAnterior, fimMesAtual), 0);
+  // Quanto cada ativo contribuiu para o rendimento do mês (só ativos com saldo atualizado no mês)
+  const detalheRendimentoMes = ativosAtivos
+    .map((a) => ({ ativo: a, d: detalheRendimentoAtivo(a, fimMesAnterior, fimMesAtual) }))
+    .filter((x) => x.d)
+    .sort((x, y) => Math.abs(y.d.rendimento) - Math.abs(x.d.rendimento));
+  const ativosSemAtualizacaoMes = ativosAtivos.filter((a) => (a.registros || []).length > 0 && !detalheRendimentoAtivo(a, fimMesAnterior, fimMesAtual)).length;
   const grauIndependencia = metaRendaMensal > 0 ? (rendimentoMes / metaRendaMensal) * 100 : null;
 
   // Rendimento (R$) e Grau (%) nos últimos 12 meses
@@ -5487,7 +5507,7 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
           ) : (
             <>
               <div className="mono" style={{ fontSize: 30, fontWeight: 700, color: grauIndependencia >= 100 ? t.primary : t.text }}>
-                {grauIndependencia == null ? "—" : `${grauIndependencia >= 0 ? "" : "-"}${Math.abs(grauIndependencia).toFixed(1)}%`}
+                {grauIndependencia == null ? "—" : `${grauIndependencia.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`}
               </div>
               <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 12 }}>da meta de renda mensal atingida em {MESES_LONGOS[mesSel]}</div>
               <div style={{ height: 8, borderRadius: 6, background: t.surfaceAlt, overflow: "hidden", marginBottom: 10 }}>
@@ -5499,6 +5519,35 @@ const InvestimentosView = React.memo(function InvestimentosView({ t, db, onChang
               </div>
             </>
           )}
+
+          <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${t.border}` }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: t.textMuted, marginBottom: 8 }}>Rendimento por ativo em {MESES_LONGOS[mesSel]}</div>
+            {detalheRendimentoMes.length === 0 ? (
+              <div style={{ fontSize: 12, color: t.textMuted }}>Nenhum ativo com saldo atualizado neste mês ainda.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", maxHeight: 260, overflowY: "auto" }}>
+                {detalheRendimentoMes.map(({ ativo, d }) => (
+                  <button key={ativo.id} onClick={() => setAtivoAbertoId(ativo.id)} title="Abrir ativo"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "8px 0", background: "none", border: "none", borderBottom: `1px solid ${t.border}`, textAlign: "left", color: t.text, cursor: "pointer" }}>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ativo.nome}</span>
+                      <span className="mono" style={{ display: "block", fontSize: 10.5, color: t.textMuted }}>
+                        {fmtBRL(d.saldoIni)} ({dataBR(d.dataIni)}) → {fmtBRL(d.saldoFim)} ({dataBR(d.dataFim)}){d.fluxo !== 0 ? ` · ${d.fluxo > 0 ? "aportes" : "resgates"} ${fmtBRL(Math.abs(d.fluxo))}` : ""}
+                      </span>
+                    </span>
+                    <span className="mono" style={{ fontSize: 13, fontWeight: 700, flexShrink: 0, color: d.rendimento >= 0 ? t.primary : t.danger }}>
+                      {d.rendimento >= 0 ? "+" : "−"}{fmtBRL(Math.abs(d.rendimento))}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {ativosSemAtualizacaoMes > 0 && (
+              <div style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>
+                {ativosSemAtualizacaoMes} ativo(s) ainda sem saldo atualizado em {MESES_LONGOS[mesSel]} — contam como R$ 0,00 até você registrar o saldo do fim do mês.
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow }}>
