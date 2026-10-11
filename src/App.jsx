@@ -4046,6 +4046,300 @@ function nomeArquivoRelatorio(tipoRelatorio, dataIni, dataFim) {
   return `relatorio-${tipoRelatorio}${periodo}`.replace(/\//g, "-");
 }
 
+/* ============================================================
+   RELATÓRIO DE VEÍCULOS (PDF) — manutenções, documentos e/ou abastecimentos no período
+   Um PDF com uma seção por tipo; as seções são separadas por uma linha pontilhada.
+   OS ainda em aberto aparecem numa seção isolada ao final, só para informar (não entram nos totais).
+   ============================================================ */
+const TIPOS_REL_VEICULO = [
+  { id: "todos", label: "Todos", titulo: "RELATÓRIO DE VEÍCULOS", arquivo: "veiculos" },
+  { id: "manutencao", label: "Manutenção", titulo: "RELATÓRIO DE MANUTENÇÕES", arquivo: "manutencoes" },
+  { id: "documentos", label: "Documentos", titulo: "RELATÓRIO DE DOCUMENTOS", arquivo: "documentos" },
+  { id: "abastecimento", label: "Abastecimento", titulo: "RELATÓRIO DE ABASTECIMENTOS", arquivo: "abastecimentos" }
+];
+const SECOES_REL_VEICULO = [
+  { id: "manutencao", titulo: "MANUTENÇÕES", nome: "Manutenções", cor: [42, 120, 214] },
+  { id: "documentos", titulo: "DOCUMENTOS", nome: "Documentos", cor: [124, 92, 196] },
+  { id: "abastecimento", titulo: "ABASTECIMENTOS", nome: "Abastecimentos", cor: [184, 134, 46] }
+];
+
+function nomeOrigemPagamento(db, pg) {
+  if (!pg || !pg.origemId) return "";
+  if (pg.origemTipo === "cartao") {
+    const c = (db.cartoes || []).find((x) => x.id === pg.origemId);
+    return c ? `${c.nome} (cartão)` : "";
+  }
+  const c = (db.contas || []).find((x) => x.id === pg.origemId);
+  return c ? `${c.nomeConta} (conta)` : "";
+}
+
+/* Reúne o que entra no relatório. OS lançadas/registradas e abastecimentos compõem as seções e os totais;
+   OS em aberto vão para a lista à parte (apenas informativa). */
+function dadosRelatorioVeiculos(db, filtro, veiculoId, ini, fim) {
+  const noPeriodo = (d) => !!d && (!ini || d >= ini) && (!fim || d <= fim);
+  const quer = (id) => filtro === "todos" || filtro === id;
+  const doVeiculo = (r) => !veiculoId || r.veiculoId === veiculoId;
+  const porData = (a, b) => (a.data || "").localeCompare(b.data || "") || (Number(a.ref.km) || 0) - (Number(b.ref.km) || 0);
+  const ordens = db.ordensServico || [];
+  const deOS = (o) => ({ kind: "os", data: o.data, veiculoId: o.veiculoId, total: totalOS(o), ref: o });
+
+  const secoes = SECOES_REL_VEICULO.filter((sc) => quer(sc.id)).map((sc) => {
+    const regs = (sc.id === "abastecimento"
+      ? (db.abastecimentos || []).filter((a) => noPeriodo(a.data)).map((a) => ({ kind: "abastecimento", data: a.data, veiculoId: a.veiculoId, total: Number(a.valorTotal) || 0, ref: a }))
+      : ordens.filter((o) => (o.status === "lancada" || o.status === "registrada") && noPeriodo(o.data) && ((o.tipo === "Documento") === (sc.id === "documentos"))).map(deOS)
+    ).filter(doVeiculo).sort(porData);
+    return { ...sc, regs, total: regs.reduce((s, r) => s + r.total, 0) };
+  }).filter((sc) => sc.regs.length > 0);
+
+  const abertas = ordens
+    .filter((o) => o.status === "aberta" && noPeriodo(o.data) && quer(o.tipo === "Documento" ? "documentos" : "manutencao"))
+    .map(deOS).filter(doVeiculo).sort(porData);
+
+  return {
+    secoes, abertas,
+    totalLancado: secoes.reduce((s, sc) => s + sc.total, 0),
+    qtdLancados: secoes.reduce((s, sc) => s + sc.regs.length, 0),
+    totalAbertas: abertas.reduce((s, r) => s + r.total, 0)
+  };
+}
+
+async function gerarPdfRelatorioVeiculos({ db, filtro, veiculoId, ini, fim }) {
+  const { jsPDF } = await import("jspdf");
+  const cfg = TIPOS_REL_VEICULO.find((x) => x.id === filtro);
+  const { secoes, abertas, totalLancado, qtdLancados, totalAbertas } = dadosRelatorioVeiculos(db, filtro, veiculoId, ini, fim);
+  if (!secoes.length && !abertas.length) return;
+
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const M = 14;
+  const larg = W - 2 * M;
+  const azul = [42, 120, 214], cinza = [92, 91, 86], laranja = [235, 104, 52], ambar = [214, 158, 46];
+  const veiculos = db.veiculos || [];
+  const veiculoSel = veiculoId ? veiculos.find((v) => v.id === veiculoId) : null;
+  const nomeVeiculo = (id) => veiculos.find((v) => v.id === id)?.nome || "Veículo removido";
+  let y = 0;
+
+  const novaPaginaSe = (h) => { if (y + h > H - 18) { doc.addPage(); y = 18; } };
+  const tracejado = () => {
+    doc.setDrawColor(130); doc.setLineWidth(0.3);
+    doc.setLineDashPattern([0.7, 1.1], 0);
+    doc.line(M, y, W - M, y);
+    doc.setLineDashPattern([], 0);
+  };
+  const texto = (str, x, opts = {}) => {
+    doc.setFont("helvetica", opts.bold ? "bold" : "normal");
+    doc.setFontSize(opts.size || 9.5);
+    doc.setTextColor(...(opts.cor || [20, 20, 20]));
+    doc.text(str, x, y, opts.align ? { align: opts.align } : undefined);
+  };
+
+  /* ---- Cabeçalho ---- */
+  doc.setFillColor(...azul); doc.rect(0, 0, W, 26, "F");
+  doc.setTextColor(255); doc.setFont("helvetica", "bold"); doc.setFontSize(15);
+  doc.text(cfg.titulo, M, 12);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9.5);
+  doc.text(`Período: ${dataBR(ini)} a ${dataBR(fim)}`, M, 20);
+  doc.text(veiculoSel ? veiculoSel.nome : "Todos os veículos", W - M, 12, { align: "right" });
+  doc.text(`${qtdLancados} registro${qtdLancados === 1 ? "" : "s"}${abertas.length ? ` + ${abertas.length} OS em aberto` : ""}`, W - M, 20, { align: "right" });
+
+  /* ---- Total ---- */
+  y = 36;
+  texto("TOTAL NO PERÍODO", M, { size: 8, cor: cinza });
+  y += 6;
+  texto(fmtBRL(totalLancado), M, { size: 15, bold: true, cor: laranja });
+  if (abertas.length) texto(`+ ${abertas.length} OS em aberto (só informativo, não somadas): ${fmtBRL(totalAbertas)}`, W - M, { size: 8.8, cor: cinza, align: "right" });
+  y += 10;
+
+  /* ---- Um registro (bloco) ---- */
+  const desenharRegistro = (r, informativo) => {
+    const o = r.ref;
+    const pgNome = nomeOrigemPagamento(db, o.pagamento);
+    const parcelas = Math.max(1, Number(o.pagamento?.parcelas) || 1);
+    const larguraTexto = larg - 6 - 32;
+    const linhas = [];
+    const metas = [];
+    if (r.kind === "abastecimento") {
+      const preco = Number(o.precoLitro) > 0 ? Number(o.precoLitro) : (Number(o.litros) > 0 ? (Number(o.valorTotal) || 0) / Number(o.litros) : 0);
+      if (o.descricao) linhas.push({ txt: o.descricao, semMarcador: true });
+      metas.push(`Km ${Number(o.km || 0).toLocaleString("pt-BR")}`);
+      metas.push(`${fmtDec(o.litros, 2)} L × R$ ${fmtDec(preco, 3)}/L`);
+      if (o.grupoTransacoes || o.pagamento?.origemId) metas.push(`Pago com ${pgNome || "—"}${parcelas > 1 ? ` em ${parcelas}x de ${fmtBRL((Number(o.valorTotal) || 0) / parcelas)}` : " (à vista)"}`);
+      else metas.push("Só registro (sem despesa lançada)");
+    } else {
+      (o.itens || []).forEach((it) => {
+        const qtd = Number(it.qtd) || 0;
+        const detalhe = qtd !== 1 ? `  (${String(qtd).replace(".", ",")} × ${fmtBRL(it.precoUnit)})` : "";
+        linhas.push({ txt: `${it.item || "Item"}${it.descricao ? ` — ${it.descricao}` : ""}${detalhe}`, valor: totalItemOS(it) });
+      });
+      if (Number(o.km) > 0) metas.push(`Km ${Number(o.km).toLocaleString("pt-BR")}`);
+      if (o.oficina) metas.push(`${o.tipo === "Documento" ? "Órgão" : "Oficina"}: ${o.oficina}`);
+      if (informativo) metas.push("Em aberto — ainda não lançada nas despesas");
+      else if (o.semFinanceiro) metas.push(`Só registro (sem despesa lançada)${pgNome ? ` · ${pgNome}` : ""}`);
+      else if (pgNome) metas.push(`Pago com ${pgNome}${parcelas > 1 ? ` em ${parcelas}x de ${fmtBRL(r.total / parcelas)}` : " (à vista)"}`);
+    }
+    const linhasQ = linhas.map((l) => ({ ...l, partes: doc.splitTextToSize(l.semMarcador ? l.txt : `• ${l.txt}`, larguraTexto) }));
+    const metaP = metas.length ? doc.splitTextToSize(metas.join("   ·   "), larg - 6) : [];
+    const obsP = r.kind === "os" && o.observacao ? doc.splitTextToSize(`Obs.: ${o.observacao}`, larg - 6).slice(0, 4) : [];
+    const altura = 6 + linhasQ.reduce((s, l) => s + l.partes.length * 4.4, 0) + metaP.length * 4.1 + obsP.length * 4.1 + 4;
+    novaPaginaSe(altura);
+
+    texto(dataBR(r.data), M + 2, { size: 10.5, bold: true });
+    texto(r.kind === "abastecimento" ? (o.combustivel || "") : `${fmtNumeroOS(o.numero)}${informativo ? " · ABERTA" : ""}`, M + 26, { size: 9.2, cor: cinza });
+    texto(nomeVeiculo(r.veiculoId), M + 62, { size: 9.5, bold: true, cor: [60, 60, 60] });
+    texto(fmtBRL(r.total), W - M - 2, { size: 10.5, bold: true, cor: informativo ? cinza : laranja, align: "right" });
+    y += 5.4;
+    linhasQ.forEach((l) => {
+      l.partes.forEach((p, i) => {
+        texto(i === 0 ? p : `  ${p}`, M + 4, { size: 9.5 });
+        if (i === 0 && l.valor != null) texto(fmtBRL(l.valor), W - M - 2, { size: 9.5, cor: informativo ? cinza : [20, 20, 20], align: "right" });
+        y += 4.4;
+      });
+    });
+    metaP.forEach((p) => { texto(p, M + 4, { size: 8.6, cor: cinza }); y += 4.1; });
+    obsP.forEach((p) => { texto(p, M + 4, { size: 8.6, cor: cinza }); y += 4.1; });
+    y += 3.6; // respiro entre registros (sem linha: o pontilhado separa só os tipos)
+  };
+
+  /* ---- Faixa de título da seção ---- */
+  const cabecalhoSecao = ({ titulo, cor, fundo, direita, corDireita, subLinhas }) => {
+    novaPaginaSe(8 + 24 + (subLinhas ? subLinhas.length * 4.4 : 0));
+    doc.setFillColor(...fundo); doc.rect(M, y - 5, larg, 8, "F");
+    doc.setFillColor(...cor); doc.rect(M, y - 5, 1.8, 8, "F");
+    texto(titulo, M + 5, { size: 10.5, bold: true });
+    texto(direita, W - M - 2, { size: 10, bold: true, cor: corDireita, align: "right" });
+    y += 7.5;
+    (subLinhas || []).forEach((l) => { texto(l, M + 5, { size: 8.6, cor: cinza }); y += 4.4; });
+    y += 1.5;
+  };
+
+  /* ---- Seções por tipo, separadas por linha pontilhada ---- */
+  secoes.forEach((sc) => {
+    const sub = [];
+    if (sc.id === "abastecimento") {
+      const litros = sc.regs.reduce((s, r) => s + (Number(r.ref.litros) || 0), 0);
+      if (litros > 0) sub.push(`${fmtLitros(litros)} abastecidos · preço médio ${fmtBRL(sc.total / litros)} por litro`);
+    }
+    cabecalhoSecao({ titulo: `${sc.titulo}  (${sc.regs.length})`, cor: sc.cor, fundo: [238, 240, 237], direita: fmtBRL(sc.total), corDireita: laranja, subLinhas: sub });
+    sc.regs.forEach((r) => desenharRegistro(r, false));
+    y += 0.5;
+    tracejado(); // separa este tipo do próximo
+    y += 8;
+  });
+
+  /* ---- OS em aberto: isoladas, só informativo ---- */
+  if (abertas.length) {
+    const aviso = doc.splitTextToSize("Apenas informativo: estas ordens ainda não foram lançadas nas despesas e não entram nos totais deste relatório.", larg - 8);
+    cabecalhoSecao({ titulo: `OS EM ABERTO — NÃO LANÇADAS NAS DESPESAS  (${abertas.length})`, cor: ambar, fundo: [255, 245, 220], direita: `previsto ${fmtBRL(totalAbertas)}`, corDireita: cinza, subLinhas: aviso });
+    abertas.forEach((r) => desenharRegistro(r, true));
+    y += 2;
+  }
+
+  /* ---- Resumo final ---- */
+  if (secoes.length > 1 || abertas.length) {
+    novaPaginaSe(16 + (secoes.length + 2) * 6);
+    texto("RESUMO", M, { size: 9, bold: true, cor: cinza });
+    y += 6;
+    secoes.forEach((sc) => {
+      texto(sc.nome, M + 2, { size: 10 });
+      texto(`${sc.regs.length} reg.`, W - M - 40, { size: 9, cor: cinza, align: "right" });
+      texto(fmtBRL(sc.total), W - M - 2, { size: 10, bold: true, align: "right" });
+      y += 5.6;
+    });
+    y += 2;
+    doc.setDrawColor(60); doc.setLineWidth(0.3); doc.line(M, y - 4.6, W - M, y - 4.6);
+    texto("TOTAL LANÇADO", M + 2, { size: 10.5, bold: true });
+    texto(fmtBRL(totalLancado), W - M - 2, { size: 11, bold: true, cor: laranja, align: "right" });
+    y += 6;
+    if (abertas.length) {
+      texto("OS em aberto (informativo, não somado)", M + 2, { size: 9.2, cor: cinza });
+      texto(`${abertas.length} OS`, W - M - 40, { size: 9, cor: cinza, align: "right" });
+      texto(fmtBRL(totalAbertas), W - M - 2, { size: 9.5, cor: cinza, align: "right" });
+    }
+  }
+
+  /* ---- Rodapé em todas as páginas ---- */
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) {
+    doc.setPage(i);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(150);
+    doc.text(`Orçamento Familiar · gerado em ${new Date().toLocaleString("pt-BR")}`, M, H - 8);
+    doc.text(`${i}/${n}`, W - M, H - 8, { align: "right" });
+  }
+
+  const nomeVeic = veiculoSel ? `_${nomeArquivoSeguro(veiculoSel.nome).replace(/_+/g, "-").toLowerCase()}` : "";
+  doc.save(`relatorio-${cfg.arquivo}${nomeVeic}_${ini}_a_${fim}.pdf`);
+}
+
+/* Cartão "Relatório de veículos" dentro de Relatórios */
+function RelatorioVeiculosCard({ t, db }) {
+  const [filtro, setFiltro] = useState("todos");
+  const [veiculoId, setVeiculoId] = useState("");
+  const [ini, setIni] = useState(primeiroDiaMesAtualISO());
+  const [fim, setFim] = useState(ultimoDiaMesAtualISO());
+  const [gerando, setGerando] = useState(false);
+  const [erro, setErro] = useState("");
+  useEffect(() => { if (ini && fim && ini > fim) setFim(fimDoMesISO(ini)); }, [ini]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (ini && fim && fim < ini) setIni(inicioDoMesISO(fim)); }, [fim]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const veiculos = ordenarPorNome(db.veiculos || []);
+  const dados = dadosRelatorioVeiculos(db, filtro, veiculoId, ini, fim);
+  const temConteudo = dados.secoes.length > 0 || dados.abertas.length > 0;
+  const podeExportar = temConteudo && !gerando && !!ini && !!fim;
+  const cfg = TIPOS_REL_VEICULO.find((x) => x.id === filtro);
+
+  const exportar = async () => {
+    setGerando(true); setErro("");
+    try { await gerarPdfRelatorioVeiculos({ db, filtro, veiculoId, ini, fim }); }
+    catch (e) { console.error(e); setErro("Não foi possível gerar o PDF. Tente novamente."); }
+    finally { setGerando(false); }
+  };
+  const inputData = { ...inputStyle(t), border: `1px solid ${t.border}`, borderRadius: 7, padding: "5px 8px", fontSize: 12.5, width: "auto", minWidth: 134, flexShrink: 0 };
+
+  return (
+    <div className="no-print" style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <Car size={16} color={t.primary} />
+        <div className="display" style={{ fontSize: 14.5, fontWeight: 700 }}>Relatório de veículos</div>
+      </div>
+      <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 14 }}>PDF com manutenções, documentos e abastecimentos no período, uma seção por tipo.</div>
+
+      <div style={{ fontSize: 11, fontWeight: 600, color: t.textMuted, marginBottom: 6 }}>O que incluir no PDF</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {TIPOS_REL_VEICULO.map((op) => (
+          <button key={op.id} onClick={() => setFiltro(op.id)} style={{ padding: "7px 14px", borderRadius: 9, border: `1px solid ${filtro === op.id ? t.primary : t.border}`, background: filtro === op.id ? `${t.primary}18` : "transparent", color: filtro === op.id ? t.primary : t.text, fontWeight: 600, fontSize: 12.5 }}>{op.label}</button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <select value={veiculoId} onChange={(e) => setVeiculoId(e.target.value)} style={{ ...inputData, minWidth: 170 }}>
+          <option value="">Todos os veículos</option>
+          {veiculos.map((v) => <option key={v.id} value={v.id}>{v.nome}</option>)}
+        </select>
+        <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: t.textMuted, fontWeight: 600, marginLeft: 6 }}><Calendar size={13} /> Período:</span>
+        <input type="date" value={ini} onChange={(e) => { if (e.target.value) setIni(e.target.value); }} style={inputData} />
+        <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
+        <input type="date" value={fim} onChange={(e) => { if (e.target.value) setFim(e.target.value); }} style={inputData} />
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <button disabled={!podeExportar} onClick={exportar} style={{ ...btnPrimary(t), opacity: podeExportar ? 1 : 0.5 }}>
+          <Printer size={15} /> {gerando ? "Gerando PDF…" : `Exportar PDF · ${cfg.label}`}
+        </button>
+        <span style={{ fontSize: 12.5, color: t.textMuted }}>
+          {!temConteudo ? "Nenhum registro neste período." : (<>
+            {dados.secoes.map((sc, i) => <span key={sc.id}>{i > 0 ? " · " : ""}{sc.nome} <strong style={{ color: t.text }}>{sc.regs.length}</strong></span>)}
+            {dados.secoes.length > 0 && <> — <strong className="mono" style={{ color: t.text }}>{fmtBRL(dados.totalLancado)}</strong></>}
+            {dados.abertas.length > 0 && <span style={{ color: t.accent }}>{dados.secoes.length > 0 ? " · " : ""}{dados.abertas.length} OS em aberto (informativo)</span>}
+          </>)}
+        </span>
+      </div>
+      {erro && <p style={{ fontSize: 11.5, color: t.danger, marginTop: 8 }}>{erro}</p>}
+      {(filtro === "todos" || filtro !== "abastecimento") && <p style={{ fontSize: 11, color: t.textMuted, marginTop: 8 }}>As OS ainda em aberto entram numa seção separada no fim do PDF, só para informar — não são somadas ao total.</p>}
+    </div>
+  );
+}
+
 const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
   const [tipoRelatorio, setTipoRelatorio] = useState("ambos");
   const [cartaoId, setCartaoId] = useState("");
@@ -4253,6 +4547,7 @@ const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
 
   return (
     <div>
+      <RelatorioVeiculosCard t={t} db={db} />
       <div className="no-print" style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: 18, boxShadow: t.shadow, marginBottom: 16 }}>
         <SectionTitle t={t} title="Gerar Relatório" icon={FileText} />
 
@@ -4429,6 +4724,7 @@ const RelatoriosView = React.memo(function RelatoriosView({ t, db }) {
           )
         )}
       </div>
+    
     </div>
   );
 });
