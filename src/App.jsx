@@ -6600,6 +6600,303 @@ function gerarTransacoesOS(os, veiculo) {
   return { grupoId, transacoes };
 }
 
+/* ============================================================
+   PAINEL DE VEÍCULOS — visão geral de despesas, consumo e custo por km
+   Fonte dos gastos: OS lançadas/registradas (manutenção e documentos) + abastecimentos.
+   ============================================================ */
+const TIPOS_GASTO_VEICULO = [
+  { id: "manutencao", label: "Manutenção" },
+  { id: "documentos", label: "Documentos" },
+  { id: "abastecimento", label: "Abastecimento" }
+];
+const corTipoGasto = (t, id) => (id === "manutencao" ? t.primary : id === "documentos" ? "#7C5CC4" : t.accent);
+
+function eventosGastoVeiculos(db) {
+  const ev = [];
+  (db.ordensServico || []).forEach((o) => {
+    if ((o.status === "lancada" || o.status === "registrada") && o.data) {
+      ev.push({ data: o.data, veiculoId: o.veiculoId, tipo: o.tipo === "Documento" ? "documentos" : "manutencao", valor: totalOS(o) });
+    }
+  });
+  (db.abastecimentos || []).forEach((a) => {
+    if (a.data) ev.push({ data: a.data, veiculoId: a.veiculoId, tipo: "abastecimento", valor: Number(a.valorTotal) || 0 });
+  });
+  return ev;
+}
+function somaPorTipo(lista) {
+  const r = { manutencao: 0, documentos: 0, abastecimento: 0 };
+  lista.forEach((e) => { r[e.tipo] += e.valor; });
+  r.total = r.manutencao + r.documentos + r.abastecimento;
+  return r;
+}
+const chaveAnoMes = (ano, mes) => `${ano}-${String(mes + 1).padStart(2, "0")}`;
+const fmtBRLCurto = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1).replace(".", ",").replace(",0", "")}k` : String(Math.round(v)));
+const fmtVariacao = (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
+
+function PainelVeiculos({ t, db }) {
+  const hoje = new Date();
+  const [ano, setAno] = useState(hoje.getFullYear());
+  const [mes, setMes] = useState(-1); // -1 = ano todo
+  const [diaIni, setDiaIni] = useState("");
+  const [diaFim, setDiaFim] = useState("");
+  const [veiculoSel, setVeiculoSel] = useState("todos");
+
+  const veiculos = db.veiculos || [];
+  const eventos = useMemo(() => eventosGastoVeiculos(db), [db.ordensServico, db.abastecimentos]); // eslint-disable-line react-hooks/exhaustive-deps
+  const evSel = veiculoSel === "todos" ? eventos : eventos.filter((e) => e.veiculoId === veiculoSel);
+
+  const anosDisponiveis = Array.from(new Set([hoje.getFullYear(), ano, ...eventos.map((e) => Number(e.data.slice(0, 4)))])).sort((a, b) => b - a);
+
+  /* ---------- período (ano / mês / dias) ---------- */
+  const pad = (n) => String(n).padStart(2, "0");
+  const ultimoDia = mes >= 0 ? new Date(ano, mes + 1, 0).getDate() : 31;
+  const dIni = Math.min(Math.max(Number(diaIni) || 1, 1), ultimoDia);
+  const dFim = Math.max(dIni, Math.min(Math.max(Number(diaFim) || ultimoDia, 1), ultimoDia));
+  const ini = mes >= 0 ? `${ano}-${pad(mes + 1)}-${pad(dIni)}` : `${ano}-01-01`;
+  const fim = mes >= 0 ? `${ano}-${pad(mes + 1)}-${pad(dFim)}` : `${ano}-12-31`;
+  const noPeriodo = (e) => e.data >= ini && e.data <= fim;
+  const rotuloPeriodo = mes < 0
+    ? `Ano de ${ano}`
+    : (dIni === 1 && dFim === ultimoDia ? `${MESES_LONGOS[mes]} de ${ano}` : `${pad(dIni)}/${pad(mes + 1)} a ${pad(dFim)}/${pad(mes + 1)}/${ano}`);
+  const filtrando = mes >= 0 || veiculoSel !== "todos" || ano !== hoje.getFullYear();
+  const limpar = () => { setAno(hoje.getFullYear()); setMes(-1); setDiaIni(""); setDiaFim(""); setVeiculoSel("todos"); };
+
+  const periodo = somaPorTipo(evSel.filter(noPeriodo));
+
+  /* ---------- série mensal do ano + índices ---------- */
+  const serieMensal = MESES.map((nome, i) => ({ mes: nome, idx: i, ...somaPorTipo(evSel.filter((e) => e.data.startsWith(chaveAnoMes(ano, i)))) }));
+  const totalAno = serieMensal.reduce((s, m) => s + m.total, 0);
+  const mesTop = serieMensal.reduce((melhor, m) => (m.total > (melhor ? melhor.total : 0) ? m : melhor), null);
+
+  const refMes = mes >= 0 ? mes : (ano === hoje.getFullYear() ? hoje.getMonth() : 11);
+  const mesAnt = refMes === 0 ? 11 : refMes - 1;
+  const anoAnt = refMes === 0 ? ano - 1 : ano;
+  const totalDoMes = (a, m) => somaPorTipo(evSel.filter((e) => e.data.startsWith(chaveAnoMes(a, m)))).total;
+  const totalRef = totalDoMes(ano, refMes);
+  const totalAntMes = totalDoMes(anoAnt, mesAnt);
+  const difMes = totalRef - totalAntMes;
+  const pctMes = totalAntMes > 0 ? (difMes / totalAntMes) * 100 : null;
+  const subiu = difMes > 0;
+  const corVar = difMes === 0 ? t.textMuted : (subiu ? t.danger : "#1BAF7A");
+
+  /* ---------- por veículo ---------- */
+  const linhas = veiculos
+    .filter((v) => veiculoSel === "todos" || v.id === veiculoSel)
+    .map((v) => ({ v, ...somaPorTipo(eventos.filter((e) => e.veiculoId === v.id && noPeriodo(e))), consumo: resumoConsumo(db, v.id, ini, fim, "todos") }))
+    .filter((l) => l.v.status !== "inativo" || l.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const maxLpk = Math.max(0, ...linhas.map((l) => l.consumo.lPorKm || 0));
+  const maxRsKm = Math.max(0, ...linhas.map((l) => l.consumo.rsPorKm || 0));
+  const lider = linhas[0] && linhas[0].total > 0 ? linhas[0] : null;
+
+  const tooltipStyle = { contentStyle: { background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8, fontSize: 12, color: t.text }, itemStyle: { color: t.text }, labelStyle: { color: t.text } };
+  const selFiltro = { ...celInput(t), width: "auto", minWidth: 0, colorScheme: t.text === THEME.dark.text ? "dark" : "light" };
+  const rotuloFiltro = { fontSize: 11, fontWeight: 600, color: t.textMuted, marginBottom: 4 };
+  const cardBase = { background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow };
+
+  const dadosPizza = TIPOS_GASTO_VEICULO.map((x) => ({ id: x.id, name: x.label, value: periodo[x.id] })).filter((x) => x.value > 0);
+
+  return (
+    <div style={{ marginBottom: 22 }}>
+      {/* ---------- Filtros ---------- */}
+      <div style={{ ...cardBase, padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "flex-end", gap: 14, flexWrap: "wrap" }}>
+        <div><div style={rotuloFiltro}>Ano</div>
+          <select value={ano} onChange={(e) => setAno(Number(e.target.value))} style={selFiltro}>{anosDisponiveis.map((a) => <option key={a} value={a}>{a}</option>)}</select>
+        </div>
+        <div><div style={rotuloFiltro}>Mês</div>
+          <select value={mes} onChange={(e) => { setMes(Number(e.target.value)); setDiaIni(""); setDiaFim(""); }} style={selFiltro}>
+            <option value={-1}>Ano todo</option>
+            {MESES_LONGOS.map((m, i) => <option key={m} value={i}>{m}</option>)}
+          </select>
+        </div>
+        <div><div style={rotuloFiltro}>Dia inicial</div>
+          <input type="number" min="1" max={ultimoDia} disabled={mes < 0} value={mes < 0 ? "" : diaIni} placeholder="1" onChange={(e) => setDiaIni(e.target.value)} style={{ ...selFiltro, width: 74, opacity: mes < 0 ? 0.5 : 1 }} />
+        </div>
+        <div><div style={rotuloFiltro}>Dia final</div>
+          <input type="number" min="1" max={ultimoDia} disabled={mes < 0} value={mes < 0 ? "" : diaFim} placeholder={String(ultimoDia)} onChange={(e) => setDiaFim(e.target.value)} style={{ ...selFiltro, width: 74, opacity: mes < 0 ? 0.5 : 1 }} />
+        </div>
+        <div><div style={rotuloFiltro}>Veículo</div>
+          <select value={veiculoSel} onChange={(e) => setVeiculoSel(e.target.value)} style={{ ...selFiltro, maxWidth: 200 }}>
+            <option value="todos">Todos os veículos</option>
+            {ordenarPorNome(veiculos).map((v) => <option key={v.id} value={v.id}>{v.nome}</option>)}
+          </select>
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 12, color: t.textMuted, display: "flex", alignItems: "center", gap: 5 }}><Calendar size={13} /> {rotuloPeriodo}</span>
+          {filtrando && <button onClick={limpar} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12.5, fontWeight: 600 }}><X size={13} /> limpar</button>}
+        </div>
+      </div>
+
+      {/* ---------- KPIs ---------- */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12, marginBottom: 12 }}>
+        <div style={{ ...cardBase, padding: "14px 16px", borderTop: `3px solid ${t.text}` }}>
+          <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 6 }}>Total no período</div>
+          <div className="mono" style={{ fontSize: 22, fontWeight: 700 }}>{fmtBRL(periodo.total)}</div>
+          <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 4 }}>{rotuloPeriodo}</div>
+        </div>
+        {TIPOS_GASTO_VEICULO.map((x) => {
+          const cor = corTipoGasto(t, x.id);
+          const pct = periodo.total > 0 ? (periodo[x.id] / periodo.total) * 100 : 0;
+          return (
+            <div key={x.id} style={{ ...cardBase, padding: "14px 16px", borderTop: `3px solid ${cor}` }}>
+              <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 6 }}>{x.label}</div>
+              <div className="mono" style={{ fontSize: 22, fontWeight: 700 }}>{fmtBRL(periodo[x.id])}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                <div style={{ flex: 1, height: 5, borderRadius: 3, background: t.surfaceAlt, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: cor }} /></div>
+                <span style={{ fontSize: 11.5, color: t.textMuted, minWidth: 36, textAlign: "right" }}>{pct.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}%</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ---------- Índices ---------- */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 12 }}>
+        <div style={{ ...cardBase, padding: "14px 16px" }}>
+          <div style={{ fontSize: 12, color: t.textMuted, display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}><TrendingUp size={14} color={t.accent} /> Mês que mais gastou em {ano}</div>
+          {mesTop ? (<>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+              <span className="display" style={{ fontSize: 20, fontWeight: 700 }}>{MESES_LONGOS[mesTop.idx]}</span>
+              <span className="mono" style={{ fontSize: 16, fontWeight: 700, color: t.danger }}>{fmtBRL(mesTop.total)}</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 5 }}>{totalAno > 0 ? `${((mesTop.total / totalAno) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}% do gasto do ano` : ""}</div>
+          </>) : <div style={{ fontSize: 13, color: t.textMuted }}>Sem gastos registrados em {ano}.</div>}
+        </div>
+
+        <div style={{ ...cardBase, padding: "14px 16px" }}>
+          <div style={{ fontSize: 12, color: t.textMuted, display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            {subiu ? <ArrowUpCircle size={14} color={corVar} /> : difMes < 0 ? <ArrowDownCircle size={14} color={corVar} /> : <ArrowLeftRight size={14} color={corVar} />}
+            {MESES_LONGOS[refMes]} vs {MESES_LONGOS[mesAnt]}
+          </div>
+          {totalRef === 0 && totalAntMes === 0 ? <div style={{ fontSize: 13, color: t.textMuted }}>Sem gastos nos dois meses.</div> : (<>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+              <span className="mono" style={{ fontSize: 20, fontWeight: 700, color: corVar }}>{difMes > 0 ? "+" : difMes < 0 ? "−" : ""}{fmtBRL(Math.abs(difMes))}</span>
+              {pctMes != null
+                ? <span style={{ fontSize: 12, fontWeight: 700, color: corVar, background: `${corVar}1A`, padding: "2px 8px", borderRadius: 6 }}>{fmtVariacao(pctMes)}</span>
+                : <span style={{ fontSize: 11.5, color: t.textMuted }}>sem base no mês anterior</span>}
+            </div>
+            <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 5 }}>
+              {difMes === 0 ? "Mesmo gasto" : subiu ? "Gastou a mais" : "Gastou a menos"}: {fmtBRL(totalRef)} em {MESES[refMes]} contra {fmtBRL(totalAntMes)} em {MESES[mesAnt]}
+            </div>
+          </>)}
+        </div>
+
+        <div style={{ ...cardBase, padding: "14px 16px" }}>
+          <div style={{ fontSize: 12, color: t.textMuted, display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}><Car size={14} color={t.primary} /> Veículo que mais gastou no período</div>
+          {lider ? (<>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+              <span className="display" style={{ fontSize: 18, fontWeight: 700 }}>{lider.v.nome}</span>
+              <span className="mono" style={{ fontSize: 16, fontWeight: 700, color: t.danger }}>{fmtBRL(lider.total)}</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 5 }}>{periodo.total > 0 ? `${((lider.total / periodo.total) * 100).toLocaleString("pt-BR", { maximumFractionDigits: 0 })}% do total` : ""}</div>
+          </>) : <div style={{ fontSize: 13, color: t.textMuted }}>Sem gastos no período.</div>}
+        </div>
+      </div>
+
+      {/* ---------- Gráficos ---------- */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, marginBottom: 12 }}>
+        <div style={{ ...cardBase, padding: 18, gridColumn: "span 2", minWidth: 0 }}>
+          <div className="display" style={{ fontSize: 14.5, fontWeight: 600 }}>Gastos por mês — {ano}</div>
+          <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 8 }}>Clique em uma barra para filtrar o mês</div>
+          {totalAno === 0 ? <EmptyChart t={t} /> : (
+            <div style={{ width: "100%", height: 250, cursor: "pointer" }}>
+              <ResponsiveContainer>
+                <BarChart data={serieMensal} margin={{ top: 6, right: 6, left: -10, bottom: 0 }} onClick={(st) => { if (st && st.activeTooltipIndex != null) setMes(st.activeTooltipIndex === mes ? -1 : st.activeTooltipIndex); }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={t.border} vertical={false} />
+                  <XAxis dataKey="mes" tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: t.textMuted, fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={fmtBRLCurto} />
+                  <Tooltip {...tooltipStyle} cursor={{ fill: `${t.primary}12` }} formatter={(v, nome) => [fmtBRL(v), nome]} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {TIPOS_GASTO_VEICULO.map((x) => (
+                    <Bar key={x.id} dataKey={x.id} name={x.label} stackId="g" fill={corTipoGasto(t, x.id)}>
+                      {serieMensal.map((m) => <Cell key={m.idx} fillOpacity={mes < 0 || mes === m.idx ? 1 : 0.3} />)}
+                    </Bar>
+                  ))}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+
+        <div style={{ ...cardBase, padding: 18, minWidth: 0 }}>
+          <div className="display" style={{ fontSize: 14.5, fontWeight: 600 }}>Distribuição dos gastos</div>
+          <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 8 }}>{rotuloPeriodo}</div>
+          {dadosPizza.length === 0 ? <EmptyChart t={t} /> : (
+            <div style={{ width: "100%", height: 250, position: "relative" }}>
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={dadosPizza} dataKey="value" nameKey="name" innerRadius="58%" outerRadius="85%" paddingAngle={2} stroke="none">
+                    {dadosPizza.map((d) => <Cell key={d.id} fill={corTipoGasto(t, d.id)} />)}
+                  </Pie>
+                  <Tooltip {...tooltipStyle} formatter={(v, nome) => [fmtBRL(v), nome]} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={{ position: "absolute", top: "40%", left: 0, right: 0, textAlign: "center", pointerEvents: "none" }}>
+                <div style={{ fontSize: 11, color: t.textMuted }}>Total</div>
+                <div className="mono" style={{ fontSize: 15, fontWeight: 700 }}>{fmtBRL(periodo.total)}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ---------- Desempenho por veículo ---------- */}
+      <div style={{ ...cardBase, padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "14px 18px 6px" }}>
+          <div className="display" style={{ fontSize: 14.5, fontWeight: 600 }}>Desempenho por veículo</div>
+          <div style={{ fontSize: 12, color: t.textMuted }}>Despesas e consumo no período · consumo calculado entre abastecimentos consecutivos</div>
+        </div>
+        {linhas.length === 0 ? <EmptyState t={t} text="Nenhum veículo para exibir." /> : (
+          <div style={{ overflowX: "auto" }} className="scrollbar">
+            <table style={{ width: "100%", minWidth: 860, borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ textAlign: "left", color: t.textMuted }}>
+                  <th style={{ ...thStyle, padding: "10px 18px" }}>Veículo</th>
+                  <th style={{ ...thStyle, padding: "10px 12px", textAlign: "right" }}>Manutenção</th>
+                  <th style={{ ...thStyle, padding: "10px 12px", textAlign: "right" }}>Documentos</th>
+                  <th style={{ ...thStyle, padding: "10px 12px", textAlign: "right" }}>Abastecimento</th>
+                  <th style={{ ...thStyle, padding: "10px 12px", textAlign: "right" }}>Total</th>
+                  <th style={{ ...thStyle, padding: "10px 12px", textAlign: "right" }}>Km rodado</th>
+                  <th style={{ ...thStyle, padding: "10px 12px", minWidth: 150 }}>Litro por km</th>
+                  <th style={{ ...thStyle, padding: "10px 18px 10px 12px", minWidth: 150 }}>R$ por km</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linhas.map((l) => (
+                  <tr key={l.v.id} style={{ opacity: l.v.status === "inativo" ? 0.55 : 1 }}>
+                    <td style={{ ...tdStyle(t), padding: "11px 18px" }}>
+                      <div style={{ fontWeight: 700 }}>{l.v.nome}</div>
+                      <div style={{ fontSize: 11, color: t.textMuted }}>{l.v.ano || "—"}{l.v.cor ? ` · ${l.v.cor}` : ""}</div>
+                    </td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "11px 12px", textAlign: "right" }}>{fmtBRL(l.manutencao)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "11px 12px", textAlign: "right" }}>{fmtBRL(l.documentos)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "11px 12px", textAlign: "right" }}>{fmtBRL(l.abastecimento)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "11px 12px", textAlign: "right", fontWeight: 700, color: t.danger }}>{fmtBRL(l.total)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "11px 12px", textAlign: "right", color: l.consumo.dist ? t.text : t.textMuted }}>{l.consumo.dist ? fmtKm(l.consumo.dist) : "—"}</td>
+                    <td style={{ ...tdStyle(t), padding: "11px 12px" }}>
+                      {l.consumo.lPorKm == null ? <span style={{ color: t.textMuted }}>—</span> : (<>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}><span className="mono" style={{ fontWeight: 700 }}>{fmtDec(l.consumo.lPorKm, 3)}</span><span style={{ fontSize: 11, color: t.textMuted }}>{fmtDec(l.consumo.kmPorL, 1)} km/L</span></div>
+                        <div style={{ height: 4, borderRadius: 2, background: t.surfaceAlt, marginTop: 5 }}><div style={{ width: `${maxLpk > 0 ? (l.consumo.lPorKm / maxLpk) * 100 : 0}%`, height: "100%", borderRadius: 2, background: corTipoGasto(t, "abastecimento") }} /></div>
+                      </>)}
+                    </td>
+                    <td style={{ ...tdStyle(t), padding: "11px 18px 11px 12px" }}>
+                      {l.consumo.rsPorKm == null ? <span style={{ color: t.textMuted }}>—</span> : (<>
+                        <span className="mono" style={{ fontWeight: 700 }}>{fmtBRL(l.consumo.rsPorKm)}</span>
+                        <div style={{ height: 4, borderRadius: 2, background: t.surfaceAlt, marginTop: 5 }}><div style={{ width: `${maxRsKm > 0 ? (l.consumo.rsPorKm / maxRsKm) * 100 : 0}%`, height: "100%", borderRadius: 2, background: t.primary }} /></div>
+                      </>)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculoInicialId }) {
   const [modalVeiculo, setModalVeiculo] = useState(null); // {} novo | {dado} editar
   const [veiculoAbertoId, setVeiculoAbertoId] = useState(veiculoInicialId || null);
@@ -6796,32 +7093,23 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
   }
 
   const ativos = veiculos.filter((v) => v.status !== "inativo");
-  const anoAtual = String(new Date().getFullYear());
-  const gastoAno = ordens.filter((o) => (o.status === "lancada" || o.status === "registrada") && (o.data || "").startsWith(anoAtual)).reduce((s, o) => s + totalOS(o), 0)
-    + abastecimentos.filter((a) => (a.data || "").startsWith(anoAtual)).reduce((s, a) => s + (Number(a.valorTotal) || 0), 0);
   const abertasTotal = ordens.filter((o) => o.status === "aberta").length;
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-        <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: 12.5, color: t.textMuted }}>Gasto com veículos em {anoAtual}</div>
-            <div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>{fmtBRL(gastoAno)}</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div className="display" style={{ fontSize: 18, fontWeight: 700 }}>Painel de veículos</div>
+          <div style={{ fontSize: 12.5, color: t.textMuted, marginTop: 2 }}>
+            Despesas, consumo e custo por km · {ativos.length} veículo{ativos.length === 1 ? "" : "s"} ativo{ativos.length === 1 ? "" : "s"}
+            {abertasTotal > 0 && <span style={{ color: t.accent, fontWeight: 600 }}> · {abertasTotal} OS aberta{abertasTotal === 1 ? "" : "s"}</span>}
           </div>
-          <div>
-            <div style={{ fontSize: 12.5, color: t.textMuted }}>Veículos ativos</div>
-            <div className="mono" style={{ fontSize: 22, fontWeight: 600 }}>{ativos.length}</div>
-          </div>
-          {abertasTotal > 0 && (
-            <div>
-              <div style={{ fontSize: 12.5, color: t.textMuted }}>OS abertas</div>
-              <div className="mono" style={{ fontSize: 22, fontWeight: 600, color: t.accent }}>{abertasTotal}</div>
-            </div>
-          )}
         </div>
         <button onClick={() => setModalVeiculo({})} style={btnPrimary(t)}><Plus size={15} /> Novo Veículo</button>
       </div>
+
+      {veiculos.length > 0 && <PainelVeiculos t={t} db={db} />}
+      {veiculos.length > 0 && <div className="display" style={{ fontSize: 14.5, fontWeight: 600, marginBottom: 10 }}>Meus veículos</div>}
 
       {veiculos.length === 0 ? (
         <EmptyState t={t} text="Nenhum veículo cadastrado ainda. Clique em “Novo Veículo” para começar a controlar manutenções e documentos." />
