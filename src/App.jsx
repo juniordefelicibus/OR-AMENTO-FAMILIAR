@@ -7,7 +7,7 @@ import {
   LineChart as LineChartIcon, CreditCard, Repeat, CheckCircle2, Ban, ArrowUpCircle,
   ArrowDownCircle, CalendarClock, SlidersHorizontal, ArrowLeftRight, StickyNote, PartyPopper, AlertTriangle, ImagePlus, Bell,
   FileSpreadsheet, FileText, Printer, Upload, Percent, DollarSign, Coins, Wand2, RefreshCw, Loader2, ArrowUpDown, ArrowUp, ArrowDown, SearchX,
-  Car, Wrench, ClipboardList, Gauge, Paperclip, Image as ImageIcon, Download
+  Car, Wrench, ClipboardList, Gauge, Paperclip, Image as ImageIcon, Download, Fuel
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -442,7 +442,7 @@ const INDICES_PADRAO = {
   dolar: { valor: 5.11, dataRef: "2026-07-29" },
   bitcoin: { valor: 331413.24, dataRef: "2026-07-29" }
 };
-const DB_DEFAULTS = { usuarios: [], contas: [], cartoes: [], transacoes: [], categorias: [], subcategorias: [], metas: [], ativos: [], indices: INDICES_PADRAO, metaRendaMensal: 0, vencimentos: [], orcamentos: [], anotacoes: [], auditoria: [], veiculos: [], ordensServico: [], tema: "light", permiteDeletarMovimentacoes: false, metasClasse: {}, brapiToken: "" };
+const DB_DEFAULTS = { usuarios: [], contas: [], cartoes: [], transacoes: [], categorias: [], subcategorias: [], metas: [], ativos: [], indices: INDICES_PADRAO, metaRendaMensal: 0, vencimentos: [], orcamentos: [], anotacoes: [], auditoria: [], veiculos: [], ordensServico: [], abastecimentos: [], tema: "light", permiteDeletarMovimentacoes: false, metasClasse: {}, brapiToken: "" };
 function withDefaults(db) {
   const merged = { ...DB_DEFAULTS, ...db };
   Object.keys(DB_DEFAULTS).forEach((k) => { if (merged[k] === undefined || merged[k] === null) merged[k] = DB_DEFAULTS[k]; });
@@ -2862,6 +2862,7 @@ const TransacoesView = React.memo(function TransacoesView({ t, db, onChange, int
                         {tx.tipo === "Receita" ? <ArrowUpCircle size={14} color={t.primary} /> : <ArrowDownCircle size={14} color={t.danger} />}
                         <span>{tx.descricao}</span>
                         {tx.osNumero && <span title="Gerada por uma Ordem de Serviço de veículo" style={{ fontSize: 10.5, fontWeight: 700, color: t.primary, background: `${t.primary}18`, padding: "1px 6px", borderRadius: 5 }}><Wrench size={9} style={{ marginRight: 3, display: "inline" }} />{fmtNumeroOS(tx.osNumero)}</span>}
+                        {tx.abastecimentoId && <span title="Gerada por um abastecimento de veículo" style={{ fontSize: 10.5, fontWeight: 700, color: t.primary, background: `${t.primary}18`, padding: "1px 6px", borderRadius: 5 }}><Fuel size={9} style={{ marginRight: 3, display: "inline" }} />Abastecimento</span>}
                         {tx.parcelaTotal > 1 && <span style={{ fontSize: 10.5, color: t.textMuted, background: t.surfaceAlt, padding: "1px 6px", borderRadius: 5 }}><Repeat size={9} style={{ marginRight: 3, display: "inline" }} />{tx.parcelaAtual}/{tx.parcelaTotal}</span>}
                         {tx.ocorrenciaTotal > 1 && <span style={{ fontSize: 10.5, color: t.textMuted, background: t.surfaceAlt, padding: "1px 6px", borderRadius: 5 }}><Repeat size={9} style={{ marginRight: 3, display: "inline" }} />{tx.recorrencia}</span>}
                       </div>
@@ -6368,13 +6369,15 @@ function kmAtualVeiculo(db, veiculo) {
   const kmsOS = (db.ordensServico || []).filter((o) => o.veiculoId === veiculo.id && o.status !== "cancelada").map((o) => Number(o.km) || 0);
   const kmsLeitura = (veiculo.leiturasKm || []).map((l) => Number(l.km) || 0);
   const kmsBase = (veiculo.lembretes || []).map((l) => Number(l.kmUltima) || 0);
-  return Math.max(0, ...kmsOS, ...kmsLeitura, ...kmsBase);
+  const kmsAbast = (db.abastecimentos || []).filter((a) => a.veiculoId === veiculo.id).map((a) => Number(a.km) || 0);
+  return Math.max(0, ...kmsOS, ...kmsLeitura, ...kmsBase, ...kmsAbast);
 }
 /* Leitura mais alta registrada (pra mostrar "atualizado em …") */
 function ultimaLeituraVeiculo(db, veiculo) {
   const fontes = [
     ...(db.ordensServico || []).filter((o) => o.veiculoId === veiculo.id && o.status !== "cancelada" && Number(o.km) > 0).map((o) => ({ km: Number(o.km), data: o.data, origem: fmtNumeroOS(o.numero) })),
-    ...(veiculo.leiturasKm || []).map((l) => ({ km: Number(l.km) || 0, data: l.data, origem: "leitura manual" }))
+    ...(veiculo.leiturasKm || []).map((l) => ({ km: Number(l.km) || 0, data: l.data, origem: "leitura manual" })),
+    ...(db.abastecimentos || []).filter((a) => a.veiculoId === veiculo.id && Number(a.km) > 0).map((a) => ({ km: Number(a.km), data: a.data, origem: "abastecimento" }))
   ];
   return fontes.sort((a, b) => b.km - a.km || (b.data || "").localeCompare(a.data || ""))[0] || null;
 }
@@ -6605,6 +6608,7 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
 
   const veiculos = db.veiculos || [];
   const ordens = db.ordensServico || [];
+  const abastecimentos = db.abastecimentos || [];
   const veiculoAberto = veiculos.find((v) => v.id === veiculoAbertoId);
 
   const salvarVeiculo = (dados) => {
@@ -6714,11 +6718,39 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
     setOsAberta(null);
   };
 
+  /* ---------- Abastecimentos ---------- */
+  const salvarAbastecimento = (dados) => {
+    const existente = dados.id ? abastecimentos.find((a) => a.id === dados.id) : null;
+    let registro = existente ? { ...existente, ...dados } : { ...dados, id: uid(), criadoEm: nowISO() };
+    const v = veiculos.find((x) => x.id === registro.veiculoId);
+    let next = { ...db };
+    let extra = "";
+    if (!registro.grupoTransacoes) {
+      if (registro.gerarDespesa) {
+        const { grupoId, transacoes } = gerarTransacoesAbastecimento(registro, v);
+        registro = { ...registro, grupoTransacoes: grupoId };
+        next.transacoes = [...(db.transacoes || []), ...transacoes];
+        extra = transacoes.length > 1 ? ` — despesa lançada em ${transacoes.length}x` : " — despesa lançada";
+      } else {
+        extra = " — só registro, sem despesa em Transações";
+      }
+    }
+    next.abastecimentos = existente ? abastecimentos.map((a) => a.id === registro.id ? registro : a) : [...abastecimentos, registro];
+    onChange(next, { tipoOperacao: existente ? "edição" : "criação", entidade: "Abastecimento", entidadeId: registro.id, detalhe: `${v?.nome || ""} — ${registro.combustivel} — ${fmtBRL(registro.valorTotal)} (${fmtLitros(registro.litros)}) a ${fmtKm(registro.km)}${extra}` });
+  };
+  const excluirAbastecimento = (ab) => {
+    const v = veiculos.find((x) => x.id === ab.veiculoId);
+    const txDoAb = (db.transacoes || []).filter((tx) => tx.abastecimentoId === ab.id);
+    const next = { ...db, abastecimentos: abastecimentos.filter((a) => a.id !== ab.id), transacoes: (db.transacoes || []).filter((tx) => tx.abastecimentoId !== ab.id) };
+    onChange(next, { tipoOperacao: "exclusão", entidade: "Abastecimento", entidadeId: ab.id, detalhe: `${v?.nome || ""} — ${ab.combustivel} — ${fmtBRL(ab.valorTotal)} em ${dataBR(ab.data)}${txDoAb.length ? ` (${txDoAb.length} despesa(s) removida(s) de Transações)` : ""}` });
+  };
+
   const resumoVeiculo = (v) => {
     const doVeiculo = ordens.filter((o) => o.veiculoId === v.id && o.status !== "cancelada");
     const soma = (tipo) => doVeiculo.filter((o) => o.tipo === tipo && (o.status === "lancada" || o.status === "registrada")).reduce((s, o) => s + totalOS(o), 0);
     const ultima = [...doVeiculo].sort((a, b) => (b.data || "").localeCompare(a.data || ""))[0];
-    return { manutencao: soma("Manutenção"), documentos: soma("Documento"), abertas: doVeiculo.filter((o) => o.status === "aberta").length, qtd: doVeiculo.length, ultima };
+    const abastecimento = abastecimentos.filter((a) => a.veiculoId === v.id).reduce((s, a) => s + (Number(a.valorTotal) || 0), 0);
+    return { manutencao: soma("Manutenção"), documentos: soma("Documento"), abastecimento, abertas: doVeiculo.filter((o) => o.status === "aberta").length, qtd: doVeiculo.length, ultima };
   };
 
   const modais = (
@@ -6755,6 +6787,8 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
           onSalvarLembrete={(l) => salvarLembrete(veiculoAberto.id, l)}
           onRemoverLembrete={(l) => removerLembrete(veiculoAberto.id, l)}
           onRegistrarKm={(leitura) => registrarLeituraKm(veiculoAberto.id, leitura)}
+          onSalvarAbastecimento={salvarAbastecimento}
+          onExcluirAbastecimento={excluirAbastecimento}
         />
         {modais}
       </>
@@ -6763,7 +6797,8 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
 
   const ativos = veiculos.filter((v) => v.status !== "inativo");
   const anoAtual = String(new Date().getFullYear());
-  const gastoAno = ordens.filter((o) => (o.status === "lancada" || o.status === "registrada") && (o.data || "").startsWith(anoAtual)).reduce((s, o) => s + totalOS(o), 0);
+  const gastoAno = ordens.filter((o) => (o.status === "lancada" || o.status === "registrada") && (o.data || "").startsWith(anoAtual)).reduce((s, o) => s + totalOS(o), 0)
+    + abastecimentos.filter((a) => (a.data || "").startsWith(anoAtual)).reduce((s, a) => s + (Number(a.valorTotal) || 0), 0);
   const abertasTotal = ordens.filter((o) => o.status === "aberta").length;
 
   return (
@@ -6813,6 +6848,7 @@ const VeiculosView = React.memo(function VeiculosView({ t, db, onChange, veiculo
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
                   <MiniStat t={t} label="Manutenção" valor={fmtBRL(r.manutencao)} />
                   <MiniStat t={t} label="Documentos" valor={fmtBRL(r.documentos)} />
+                  <MiniStat t={t} label="Abastecimento" valor={fmtBRL(r.abastecimento)} />
                 </div>
                 {(() => {
                   const kmV = kmAtualVeiculo(db, v);
@@ -6984,7 +7020,8 @@ function ModalLeituraKm({ t, kmAtual, onClose, onSave }) {
   );
 }
 
-function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternarStatus, onNovaOS, onAbrirOS, onSalvarLembrete, onRemoverLembrete, onRegistrarKm }) {
+function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternarStatus, onNovaOS, onAbrirOS, onSalvarLembrete, onRemoverLembrete, onRegistrarKm, onSalvarAbastecimento, onExcluirAbastecimento }) {
+  const [aba, setAba] = useState("os"); // 'os' | 'abastecimento'
   const [filtroTipo, setFiltroTipo] = useState("todas");
   const [dataIni, setDataIni] = useState("");
   const [dataFim, setDataFim] = useState("");
@@ -7034,16 +7071,29 @@ function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternar
             <IconBtn t={t} title={veiculo.status === "ativo" ? "Inativar" : "Reativar"} onClick={onAlternarStatus} danger={veiculo.status === "ativo"}><Power size={13} /></IconBtn>
           </div>
         </div>
-        <div className="cards-row" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 12, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${t.border}` }}>
-          <MiniStat t={t} label="Total gasto" valor={fmtBRL(resumo.manutencao + resumo.documentos)} />
+        <div className="cards-row" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0,1fr))", gap: 12, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${t.border}` }}>
+          <MiniStat t={t} label="Total gasto" valor={fmtBRL(resumo.manutencao + resumo.documentos + resumo.abastecimento)} />
           <MiniStat t={t} label="Manutenção" valor={fmtBRL(resumo.manutencao)} />
           <MiniStat t={t} label="Documentos" valor={fmtBRL(resumo.documentos)} />
+          <MiniStat t={t} label="Abastecimento" valor={fmtBRL(resumo.abastecimento)} />
           <MiniStat t={t} label="OS abertas" valor={resumo.abertas} destaque={resumo.abertas > 0} />
         </div>
       </div>
 
       <PainelLembretes t={t} db={db} veiculo={veiculo} onSalvarLembrete={onSalvarLembrete} onRemoverLembrete={onRemoverLembrete} onRegistrarKm={onRegistrarKm} />
 
+      <div style={{ display: "flex", gap: 4, marginBottom: 14, borderBottom: `1px solid ${t.border}` }}>
+        {[["os", "Manutenção e documentos", Wrench], ["abastecimento", "Abastecimento", Fuel]].map(([id, label, Icone]) => (
+          <button key={id} onClick={() => setAba(id)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", background: "none", border: "none", borderBottom: `2px solid ${aba === id ? t.primary : "transparent"}`, color: aba === id ? t.primary : t.textMuted, fontWeight: 700, fontSize: 13, marginBottom: -1 }}>
+            <Icone size={14} /> {label}
+          </button>
+        ))}
+      </div>
+
+      {aba === "abastecimento" ? (
+        <PainelAbastecimentos t={t} db={db} veiculo={veiculo} onSalvar={onSalvarAbastecimento} onExcluir={onExcluirAbastecimento} />
+      ) : (
+      <>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 6 }}>
           {[["todas", "Todas"], ["Manutenção", "Manutenção"], ["Documento", "Documentos"]].map(([id, label]) => (
@@ -7115,7 +7165,455 @@ function VeiculoDetalhe({ t, db, veiculo, resumo, onVoltar, onEditar, onAlternar
           </table>
         </div>
       )}
+      </>
+      )}
     </div>
+  );
+}
+
+/* ============================================================
+   ABASTECIMENTOS — controle de combustível por veículo
+   Cada registro: { id, veiculoId, descricao, combustivel, data, km, litros, valorTotal }
+   Consumo calculado entre abastecimentos consecutivos (ordenados por km), assumindo tanque cheio:
+   km rodado = km deste abastecimento − km do anterior; litros/valor = os deste abastecimento.
+   ============================================================ */
+const COMBUSTIVEIS = ["Gasolina", "Álcool"];
+const corCombustivel = (t, c) => (c === "Álcool" ? "#1BAF7A" : t.accent);
+const fmtLitros = (n) => `${(Number(n) || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} L`;
+const fmtDec = (n, casas = 3) => (Number(n) || 0).toLocaleString("pt-BR", { minimumFractionDigits: casas, maximumFractionDigits: casas });
+
+/* Classificação padrão da despesa de abastecimento: categoria do veículo + subcategoria de combustível, se existir */
+function classificacaoAbastecimento(db, veiculo) {
+  const base = classificacaoVeiculo(db, veiculo);
+  if (!base.categoriaId) return { categoriaId: "", subcategoriaId: "" };
+  const subs = (db.subcategorias || []).filter((sc) => sc.categoriaId === base.categoriaId && sc.status === "ativo");
+  const ehCombustivel = (sc) => /COMBUST|ABASTEC|GASOLINA|ALCOOL|ETANOL/.test(normalizarNomeCategoria(sc.nome));
+  const palavras = palavrasNomeVeiculo(veiculo?.nome);
+  const candidatas = subs.filter(ehCombustivel);
+  const sub = candidatas.find((sc) => palavras.some((p) => normalizarNomeCategoria(sc.nome).includes(p.slice(0, 5)))) || candidatas[0];
+  return { categoriaId: base.categoriaId, subcategoriaId: sub?.id || "" };
+}
+
+/* Monta as despesas (à vista ou parceladas) geradas por um abastecimento */
+function gerarTransacoesAbastecimento(ab, veiculo) {
+  const pg = ab.pagamento || {};
+  const total = Number(ab.valorTotal) || 0;
+  const parcelas = Math.max(1, Number(pg.parcelas) || 1);
+  const grupoId = uid();
+  const valorParcela = Math.round((total / parcelas) * 100) / 100;
+  const base = `ABASTECIMENTO · ${(veiculo?.nome || "VEÍCULO").toUpperCase()} · ${(ab.combustivel || "").toUpperCase()}${ab.descricao ? ` · ${ab.descricao}` : ""}`;
+  let acumulado = 0;
+  const transacoes = Array.from({ length: parcelas }, (_, i) => {
+    const valor = i === parcelas - 1 ? Math.round((total - acumulado) * 100) / 100 : valorParcela;
+    acumulado += valorParcela;
+    const quitadaAgora = i === 0 && pg.jaPaga;
+    return {
+      id: uid(), tipo: "Despesa",
+      descricao: parcelas > 1 ? `${base} (${i + 1}/${parcelas})` : base,
+      valor, data: addMonthsISO(pg.vencimento || ab.data, i),
+      origemTipo: pg.origemTipo, origemId: pg.origemId,
+      categoriaId: pg.categoriaId || null, subcategoriaId: pg.subcategoriaId || null,
+      parcelaAtual: i + 1, parcelaTotal: parcelas, grupoParcelamento: grupoId,
+      dataInclusao: null, dataRecebimento: null,
+      status: quitadaAgora ? "concluido" : "pendente",
+      dataBaixa: quitadaAgora ? hojeISO() : null,
+      contaPagamentoId: quitadaAgora && pg.origemTipo === "conta" ? pg.origemId : null,
+      abastecimentoId: ab.id, veiculoId: ab.veiculoId
+    };
+  });
+  return { grupoId, transacoes };
+}
+
+function trechosConsumo(db, veiculoId) {
+  const lista = (db.abastecimentos || [])
+    .filter((a) => a.veiculoId === veiculoId)
+    .sort((a, b) => (Number(a.km) || 0) - (Number(b.km) || 0) || (a.data || "").localeCompare(b.data || ""));
+  const trechos = [];
+  for (let i = 1; i < lista.length; i++) {
+    const dist = (Number(lista[i].km) || 0) - (Number(lista[i - 1].km) || 0);
+    const litros = Number(lista[i].litros) || 0;
+    if (dist <= 0 || litros <= 0) continue;
+    trechos.push({ id: lista[i].id, data: lista[i].data, combustivel: lista[i].combustivel, dist, litros, valor: Number(lista[i].valorTotal) || 0 });
+  }
+  return trechos;
+}
+function somarTrechos(trechos) {
+  const dist = trechos.reduce((s, x) => s + x.dist, 0);
+  const litros = trechos.reduce((s, x) => s + x.litros, 0);
+  const valor = trechos.reduce((s, x) => s + x.valor, 0);
+  return {
+    dist, litros, valor, qtd: trechos.length,
+    lPorKm: dist > 0 ? litros / dist : null,
+    kmPorL: litros > 0 ? dist / litros : null,
+    rsPorKm: dist > 0 ? valor / dist : null
+  };
+}
+function resumoConsumo(db, veiculoId, ini, fim, combustivel) {
+  const trechos = trechosConsumo(db, veiculoId)
+    .filter((x) => (!ini || (x.data || "") >= ini) && (!fim || (x.data || "") <= fim) && (combustivel === "todos" || x.combustivel === combustivel));
+  return {
+    ...somarTrechos(trechos),
+    porCombustivel: COMBUSTIVEIS.map((c) => ({ combustivel: c, ...somarTrechos(trechos.filter((x) => x.combustivel === c)) })).filter((x) => x.qtd > 0)
+  };
+}
+
+/* Aba "Abastecimento" dentro do detalhe do veículo */
+function PainelAbastecimentos({ t, db, veiculo, onSalvar, onExcluir }) {
+  const [modal, setModal] = useState(null); // {} novo | { dado } editar
+  const [excluindo, setExcluindo] = useState(null);
+  const [dataIni, setDataIni] = useState("");
+  const [dataFim, setDataFim] = useState("");
+  const [comb, setComb] = useState("todos");
+
+  const todos = (db.abastecimentos || []).filter((a) => a.veiculoId === veiculo.id);
+  const lista = todos
+    .filter((a) => (!dataIni || (a.data || "") >= dataIni) && (!dataFim || (a.data || "") <= dataFim) && (comb === "todos" || a.combustivel === comb))
+    .sort((a, b) => (b.data || "").localeCompare(a.data || "") || (Number(b.km) || 0) - (Number(a.km) || 0));
+  const filtrando = !!(dataIni || dataFim || comb !== "todos");
+  const totalLista = lista.reduce((s, a) => s + (Number(a.valorTotal) || 0), 0);
+  const litrosLista = lista.reduce((s, a) => s + (Number(a.litros) || 0), 0);
+  const precoMedio = litrosLista > 0 ? totalLista / litrosLista : null;
+  const r = resumoConsumo(db, veiculo.id, dataIni, dataFim, comb);
+  const semDados = r.qtd === 0;
+  const limpar = () => { setDataIni(""); setDataFim(""); setComb("todos"); };
+
+  const Card = ({ label, valor, sub, destaque }) => (
+    <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, padding: "14px 16px", boxShadow: t.shadow, minWidth: 0 }}>
+      <div style={{ fontSize: 11.5, color: t.textMuted, marginBottom: 5 }}>{label}</div>
+      <div className="mono" style={{ fontSize: 20, fontWeight: 700, color: destaque || t.text }}>{valor}</div>
+      {sub && <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}><Fuel size={15} color={t.primary} /> Resumo de consumo{filtrando ? " (filtrado)" : ""}</div>
+        <button onClick={() => setModal({})} style={btnPrimary(t)}><Plus size={14} /> Novo abastecimento</button>
+      </div>
+
+      <div className="cards-row" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0,1fr))", gap: 12, marginBottom: 12 }}>
+        <Card label="Consumo (litro por km)" valor={semDados ? "—" : `${fmtDec(r.lPorKm, 3)} L/km`} sub={semDados ? null : `${fmtDec(r.kmPorL, 1)} km por litro`} />
+        <Card label="Custo por km rodado" valor={semDados ? "—" : `${fmtBRL(r.rsPorKm)}/km`} sub={semDados ? null : `${fmtBRL(r.valor)} em ${fmtKm(r.dist)}`} />
+        <Card label="Preço médio do litro" valor={precoMedio == null ? "—" : fmtBRL(precoMedio)} sub={litrosLista > 0 ? `${fmtLitros(litrosLista)} abastecidos` : null} />
+        <Card label="Total gasto" valor={fmtBRL(totalLista)} sub={`${lista.length} abastecimento${lista.length === 1 ? "" : "s"}`} destaque={t.danger} />
+      </div>
+
+      {semDados && (
+        <div style={{ fontSize: 12, color: t.textMuted, margin: "0 0 12px", lineHeight: 1.5 }}>
+          Para calcular o consumo, registre pelo menos 2 abastecimentos com quilometragens diferentes (com litros informados).
+        </div>
+      )}
+
+      {r.porCombustivel.length > 0 && (
+        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 12, padding: "10px 14px", marginBottom: 12, display: "flex", flexDirection: "column", gap: 7 }}>
+          {r.porCombustivel.map((x) => (
+            <div key={x.combustivel} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12.5 }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 700, minWidth: 92 }}>
+                <span style={{ width: 9, height: 9, borderRadius: "50%", background: corCombustivel(t, x.combustivel) }} />{x.combustivel}
+              </span>
+              <span className="mono">{fmtDec(x.lPorKm, 3)} L/km</span>
+              <span style={{ color: t.textMuted }}>({fmtDec(x.kmPorL, 1)} km/L)</span>
+              <span className="mono">{fmtBRL(x.rsPorKm)}/km</span>
+              <span style={{ color: t.textMuted }}>· {fmtKm(x.dist)} rodados</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="os-filtros" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: t.surface, border: `1px solid ${t.border}`, borderRadius: 12, padding: "10px 12px", marginBottom: 12 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: t.textMuted }}><Calendar size={14} /> Período:</span>
+        <input type="date" value={dataIni} onChange={(e) => setDataIni(e.target.value)} style={{ ...celInput(t), width: 150 }} />
+        <span style={{ fontSize: 12, color: t.textMuted }}>até</span>
+        <input type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} style={{ ...celInput(t), width: 150 }} />
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+          {[["todos", "Todos"], ...COMBUSTIVEIS.map((c) => [c, c])].map(([id, label]) => (
+            <button key={id} onClick={() => setComb(id)} style={{ padding: "6px 11px", borderRadius: 8, border: `1px solid ${comb === id ? t.primary : t.border}`, background: comb === id ? `${t.primary}18` : "transparent", color: comb === id ? t.primary : t.text, fontWeight: 600, fontSize: 12 }}>{label}</button>
+          ))}
+        </div>
+        {filtrando && <button onClick={limpar} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: t.primary, fontSize: 12.5, fontWeight: 600 }}><X size={13} /> limpar</button>}
+      </div>
+
+      {todos.length === 0 ? (
+        <EmptyState t={t} text="Nenhum abastecimento registrado para este veículo. Clique em “Novo abastecimento” para começar a acompanhar o consumo." />
+      ) : lista.length === 0 ? (
+        <EmptyState t={t} text="Nenhum abastecimento encontrado com esses filtros." />
+      ) : (
+        <div style={{ background: t.surface, border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow, overflowX: "auto" }} className="scrollbar">
+          <table style={{ width: "100%", minWidth: 760, borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: t.textMuted }}>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Data</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Descrição</th>
+                <th style={{ ...thStyle, padding: "12px 16px" }}>Combustível</th>
+                <th style={{ ...thStyle, padding: "12px 16px", textAlign: "right" }}>Km</th>
+                <th style={{ ...thStyle, padding: "12px 16px", textAlign: "right" }}>Litros</th>
+                <th style={{ ...thStyle, padding: "12px 16px", textAlign: "right" }}>R$/litro</th>
+                <th style={{ ...thStyle, padding: "12px 16px", textAlign: "right" }}>Total</th>
+                <th style={{ ...thStyle, padding: "12px 16px", width: 70 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {lista.map((a) => {
+                const cor = corCombustivel(t, a.combustivel);
+                const precoL = Number(a.litros) > 0 ? (Number(a.valorTotal) || 0) / Number(a.litros) : null;
+                return (
+                  <tr key={a.id}>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px" }}>{dataBR(a.data)}</td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px", color: a.descricao ? t.text : t.textMuted, maxWidth: 240 }}>
+                      <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.descricao || "—"}</div>
+                      {a.grupoTransacoes
+                        ? <div style={{ fontSize: 10.5, color: t.primary, display: "flex", alignItems: "center", gap: 4 }}><Receipt size={10} /> despesa lançada{Number(a.pagamento?.parcelas) > 1 ? ` · ${a.pagamento.parcelas}x` : ""}</div>
+                        : <div style={{ fontSize: 10.5, color: t.textMuted, display: "flex", alignItems: "center", gap: 4 }}><Ban size={10} /> só registro</div>}
+                    </td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: cor, background: `${cor}1A`, padding: "3px 8px", borderRadius: 6 }}>{a.combustivel}</span>
+                    </td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", textAlign: "right" }}>{fmtKm(a.km)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", textAlign: "right" }}>{fmtDec(a.litros, 2)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", textAlign: "right", color: t.textMuted }}>{precoL == null ? "—" : fmtBRL(precoL)}</td>
+                    <td className="mono" style={{ ...tdStyle(t), padding: "10px 16px", textAlign: "right", fontWeight: 700, color: t.danger }}>{fmtBRL(a.valorTotal)}</td>
+                    <td style={{ ...tdStyle(t), padding: "10px 16px" }}>
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <IconBtn t={t} title="Editar" onClick={() => setModal({ dado: a })}><Pencil size={13} /></IconBtn>
+                        <IconBtn t={t} title="Excluir" onClick={() => setExcluindo(a)} danger><Trash2 size={13} /></IconBtn>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {modal && (
+        <ModalAbastecimento
+          t={t} db={db} dado={modal.dado} veiculoIdInicial={veiculo.id}
+          onClose={() => setModal(null)}
+          onSave={(d) => { onSalvar(d); setModal(null); }}
+        />
+      )}
+      {excluindo && (
+        <ModalConfirmarExclusao
+          t={t} titulo="Excluir abastecimento"
+          mensagem={`Excluir o abastecimento de ${dataBR(excluindo.data)} (${fmtBRL(excluindo.valorTotal)}, ${fmtKm(excluindo.km)})? Isso muda o cálculo de consumo.${(db.transacoes || []).filter((tx) => tx.abastecimentoId === excluindo.id).length ? ` As ${(db.transacoes || []).filter((tx) => tx.abastecimentoId === excluindo.id).length} despesa(s) geradas em Transações também serão removidas (inclusive as já pagas).` : ""}`}
+          textoConfirmar="Excluir" iconeConfirmar={Trash2}
+          onClose={() => setExcluindo(null)}
+          onConfirmar={() => { onExcluir(excluindo); setExcluindo(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* Preço do litro com máscara de 3 casas (estilo bomba: 5,899) */
+function PrecoLitroInput({ milesimos, onChange, t }) {
+  const display = ((Number(milesimos) || 0) / 1000).toLocaleString("pt-BR", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+  const handle = (e) => {
+    const digits = e.target.value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+    onChange(digits === "" ? 0 : parseInt(digits, 10));
+  };
+  return <input inputMode="numeric" value={display} onChange={handle} style={inputStyle(t)} placeholder="0,000" />;
+}
+
+function ModalAbastecimento({ t, db, dado, veiculoIdInicial, onClose, onSave }) {
+  const [veiculoId, setVeiculoId] = useState(dado?.veiculoId || veiculoIdInicial || "");
+  const [descricao, setDescricao] = useState(dado?.descricao || "");
+  const [combustivel, setCombustivel] = useState(dado?.combustivel || COMBUSTIVEIS[0]);
+  const [data, setData] = useState(dado?.data || hojeISO());
+  const [km, setKm] = useState(dado?.km ? String(dado.km) : "");
+  const [litros, setLitros] = useState(dado?.litros ? String(dado.litros).replace(".", ",") : "");
+  // Preço do litro em milésimos de real (bombas mostram 3 casas, ex: 5,899)
+  const [precoMil, setPrecoMil] = useState(
+    dado?.precoLitro ? Math.round(Number(dado.precoLitro) * 1000)
+      : (dado?.valorTotal && dado?.litros ? Math.round((Number(dado.valorTotal) / Number(dado.litros)) * 1000) : 0)
+  );
+
+  const veiculos = ordenarPorNome((db.veiculos || []).filter((v) => v.status !== "inativo" || v.id === veiculoId));
+  const veiculo = (db.veiculos || []).find((v) => v.id === veiculoId);
+  // km mais alto já registrado, ignorando o próprio registro quando estiver editando
+  const kmAnterior = veiculo ? kmAtualVeiculo({ ...db, abastecimentos: (db.abastecimentos || []).filter((a) => a.id !== dado?.id) }, veiculo) : 0;
+  const nKm = Number(km) || 0;
+  const nLitros = Number(String(litros).replace(",", ".")) || 0;
+  const valor = Math.round((precoMil / 1000) * nLitros * 100) / 100; // valor total calculado
+  const kmMenor = nKm > 0 && kmAnterior > 0 && nKm < kmAnterior;
+
+  /* ---------- Pagamento / despesa em Transações ---------- */
+  const jaTemDespesa = !!dado?.grupoTransacoes;
+  const txGeradas = jaTemDespesa ? (db.transacoes || []).filter((tx) => tx.abastecimentoId === dado.id) : [];
+  const ultimoPg = [...(db.abastecimentos || [])].filter((a) => a.veiculoId === (dado?.veiculoId || veiculoIdInicial) && a.pagamento?.origemId).sort((a, b) => (b.data || "").localeCompare(a.data || ""))[0]?.pagamento;
+  const pg0 = dado?.pagamento || {};
+  const contasAtivas = (db.contas || []).filter((c) => c.status === "ativo");
+  const cartoesAtivos = (db.cartoes || []).filter((c) => c.status === "ativo");
+  const classif0 = classificacaoAbastecimento(db, (db.veiculos || []).find((v) => v.id === (dado?.veiculoId || veiculoIdInicial || "")));
+  const [gerarDespesa, setGerarDespesa] = useState(dado ? false : true);
+  const [origem, setOrigem] = useState(pg0.origemId ? `${pg0.origemTipo}:${pg0.origemId}` : (ultimoPg?.origemId && [...contasAtivas.map((c) => `conta:${c.id}`), ...cartoesAtivos.map((c) => `cartao:${c.id}`)].includes(`${ultimoPg.origemTipo}:${ultimoPg.origemId}`) ? `${ultimoPg.origemTipo}:${ultimoPg.origemId}` : ""));
+  const [parcelas, setParcelas] = useState(pg0.parcelas || 1);
+  const [vencimento, setVencimento] = useState(pg0.vencimento || (dado?.data || hojeISO()));
+  const [categoriaId, setCategoriaId] = useState(pg0.categoriaId || classif0.categoriaId);
+  const [subcategoriaId, setSubcategoriaId] = useState(pg0.subcategoriaId || classif0.subcategoriaId);
+  const [jaPaga, setJaPaga] = useState(false);
+  const [origemTipo, origemId] = origem ? origem.split(":") : ["", ""];
+  const nParcelas = Math.max(1, Number(parcelas) || 1);
+  const categoriasDesp = ordenarPorNome((db.categorias || []).filter((c) => c.tipo === "Despesa" && c.status === "ativo"));
+  const subcategoriasDesp = ordenarPorNome((db.subcategorias || []).filter((sc) => sc.categoriaId === categoriaId && sc.status === "ativo"));
+  const escolherOrigem = (valorSel) => {
+    setOrigem(valorSel);
+    const [tp, id] = valorSel.split(":");
+    if (tp === "cartao") {
+      const cartao = cartoesAtivos.find((c) => c.id === id);
+      const venc = cartao ? proximaDataDoMes(cartao.diaVencimento) : null;
+      if (venc) setVencimento(venc);
+      setJaPaga(false);
+    } else if (tp === "conta") {
+      setVencimento(data);
+    }
+  };
+  const trocarVeiculo = (id) => {
+    setVeiculoId(id);
+    if (!dado) {
+      const c = classificacaoAbastecimento(db, (db.veiculos || []).find((v) => v.id === id));
+      setCategoriaId(c.categoriaId); setSubcategoriaId(c.subcategoriaId);
+    }
+  };
+  useEffect(() => { if (origemTipo === "conta" && !pg0.vencimento) setVencimento(data); }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lancando = !jaTemDespesa && gerarDespesa;
+  const valido = !!veiculoId && !!data && nKm > 0 && nLitros > 0 && valor > 0 && (!lancando || (!!origemTipo && !!vencimento));
+
+  return (
+    <ModalShell t={t} title={dado ? "Editar abastecimento" : "Novo abastecimento"} onClose={onClose} maxWidth={460}>
+      <Field label="Veículo" t={t} icon={<Car size={14} />}>
+        <select value={veiculoId} onChange={(e) => trocarVeiculo(e.target.value)} style={selectStyle(t)}>
+          <option value="">Selecione…</option>
+          {veiculos.map((v) => <option key={v.id} value={v.id}>{v.nome}{v.ano ? ` (${v.ano})` : ""}</option>)}
+        </select>
+      </Field>
+      <Field label="Descrição" t={t} icon={<StickyNote size={14} />}>
+        <input value={descricao} onChange={(e) => setDescricao(e.target.value)} style={inputStyle(t)} placeholder="EX: Posto Shell, viagem a Ribeirão…" />
+      </Field>
+
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: t.textMuted, marginBottom: 6 }}>Combustível</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 13 }}>
+        {COMBUSTIVEIS.map((c) => {
+          const ativo = combustivel === c;
+          const cor = corCombustivel(t, c);
+          return (
+            <button key={c} type="button" onClick={() => setCombustivel(c)} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "10px 12px", borderRadius: 10, border: `1.5px solid ${ativo ? cor : t.border}`, background: ativo ? `${cor}18` : "transparent", color: ativo ? cor : t.text, fontWeight: 700, fontSize: 13.5 }}>
+              <Fuel size={14} /> {c}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8 }}>
+        <Field label="Data" t={t} icon={<Calendar size={14} />}>
+          <input type="date" value={data} onChange={(e) => setData(e.target.value)} style={inputStyle(t)} />
+        </Field>
+        <Field label="Quilometragem" t={t} icon={<Gauge size={14} />}>
+          <input inputMode="numeric" value={km} onChange={(e) => setKm(e.target.value.replace(/\D/g, ""))} style={inputStyle(t)} placeholder={kmAnterior ? String(kmAnterior) : "0"} />
+        </Field>
+        <Field label="Preço do litro" t={t} icon={<DollarSign size={14} />}>
+          <PrecoLitroInput milesimos={precoMil} onChange={setPrecoMil} t={t} />
+        </Field>
+        <Field label="Litros" t={t} icon={<Fuel size={14} />}>
+          <input inputMode="decimal" value={litros} onChange={(e) => setLitros(e.target.value.replace(/[^\d,]/g, "").replace(/,(?=.*,)/g, ""))} style={inputStyle(t)} placeholder="0,00" />
+        </Field>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 10, padding: "11px 14px", margin: "4px 0 14px" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: t.textMuted }}>Valor total (calculado)</span>
+        <strong className="mono" style={{ fontSize: 18, color: valor > 0 ? t.danger : t.textMuted }}>{fmtBRL(valor)}</strong>
+      </div>
+      {kmMenor && (
+        <p style={{ fontSize: 11.5, color: t.accent, margin: "-4px 0 12px", lineHeight: 1.5 }}>
+          Esse km é menor que o último registrado ({fmtKm(kmAnterior)}) — confira o número, pois ele afeta o cálculo de consumo.
+        </p>
+      )}
+
+      {/* ---------- PAGAMENTO ---------- */}
+      <div style={{ background: t.surfaceAlt, border: `1px solid ${t.border}`, borderRadius: 12, padding: "12px 12px 2px", marginBottom: 14 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: t.textMuted, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}><Wallet size={14} /> Pagamento</div>
+        {jaTemDespesa ? (
+          <div style={{ fontSize: 12, color: t.text, lineHeight: 1.55, marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, marginBottom: 4 }}><Receipt size={13} color={t.primary} /> Despesa já lançada em Transações</div>
+            {txGeradas.length > 0
+              ? <>{txGeradas.length} lançamento(s), total <strong className="mono">{fmtBRL(txGeradas.reduce((sm, x) => sm + (Number(x.valor) || 0), 0))}</strong>.</>
+              : <>Os lançamentos foram removidos de Transações.</>}
+            <div style={{ color: t.textMuted, marginTop: 4 }}>Alterar valor ou litros aqui não muda as despesas já lançadas — ajuste-as em Transações, se precisar.</div>
+          </div>
+        ) : (<>
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "10px 12px", marginBottom: 12, borderRadius: 10, cursor: "pointer", border: `1px solid ${gerarDespesa ? t.primary : t.border}`, background: gerarDespesa ? `${t.primary}12` : t.surface }}>
+            <input type="checkbox" checked={gerarDespesa} onChange={(e) => setGerarDespesa(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>
+              <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: t.text }}>Gerar despesa em Transações</span>
+              <span style={{ display: "block", fontSize: 11.5, color: t.textMuted, marginTop: 2 }}>Desmarque para só registrar o abastecimento (ex.: pago com vale-alimentação) e acompanhar o consumo, sem criar conta a pagar.</span>
+            </span>
+          </label>
+          {gerarDespesa && (<>
+            <Field label="Pagar com" t={t} icon={origemTipo === "cartao" ? <CreditCard size={14} /> : <Wallet size={14} />}>
+              <select value={origem} onChange={(e) => escolherOrigem(e.target.value)} style={selectStyle(t)}>
+                <option value="">Selecione conta ou cartão</option>
+                {contasAtivas.length > 0 && <optgroup label="Contas">{contasAtivas.map((c) => <option key={c.id} value={`conta:${c.id}`}>{c.nomeConta}</option>)}</optgroup>}
+                {cartoesAtivos.length > 0 && <optgroup label="Cartões de crédito">{cartoesAtivos.map((c) => <option key={c.id} value={`cartao:${c.id}`}>{c.nome}</option>)}</optgroup>}
+              </select>
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,0.8fr) minmax(0,1.2fr)", gap: 8 }}>
+              <Field label="Parcelas" t={t} icon={<Repeat size={14} />}>
+                <input type="number" min="1" max="36" value={parcelas} onChange={(e) => setParcelas(e.target.value)} style={inputStyle(t)} />
+              </Field>
+              <Field label={nParcelas > 1 ? "1º vencimento" : "Vencimento"} t={t} icon={<CalendarClock size={14} />}>
+                <input type="date" value={vencimento} onChange={(e) => setVencimento(e.target.value)} style={inputStyle(t)} />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 8 }}>
+              <Field label="Categoria" t={t} icon={<Tags size={14} />}>
+                <select value={categoriaId || ""} onChange={(e) => { setCategoriaId(e.target.value); setSubcategoriaId(""); }} style={selectStyle(t)}>
+                  <option value="">Sem categoria</option>
+                  {categoriasDesp.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                </select>
+              </Field>
+              <Field label="Subcategoria" t={t} icon={<Tags size={14} />}>
+                <select value={subcategoriaId} onChange={(e) => setSubcategoriaId(e.target.value)} disabled={!categoriaId} style={{ ...selectStyle(t), opacity: categoriaId ? 1 : 0.5 }}>
+                  <option value="">{categoriaId ? "Sem subcategoria" : "Selecione a categoria"}</option>
+                  {subcategoriasDesp.map((sc) => <option key={sc.id} value={sc.id}>{sc.nome}</option>)}
+                </select>
+              </Field>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 12.5, color: t.text }}>
+                {valor > 0 ? (nParcelas > 1 ? <>Vai gerar <strong>{nParcelas} despesas</strong> de <strong className="mono">{fmtBRL(valor / nParcelas)}</strong></> : <>Vai gerar <strong>1 despesa</strong> de <strong className="mono">{fmtBRL(valor)}</strong></>) : <span style={{ color: t.textMuted }}>Informe preço e litros para calcular.</span>}
+              </span>
+              {origemTipo === "conta" && (
+                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                  <input type="checkbox" checked={jaPaga} onChange={(e) => setJaPaga(e.target.checked)} /> {nParcelas > 1 ? "1ª parcela já paga" : "Já foi paga"}
+                </label>
+              )}
+            </div>
+          </>)}
+          {!gerarDespesa && (
+            <div style={{ fontSize: 12.5, color: t.text, display: "flex", alignItems: "center", gap: 6, marginBottom: 12 }}>
+              <Ban size={13} color={t.textMuted} /> <span><strong>Nenhuma despesa</strong> será criada em Transações. O abastecimento entra só no histórico e no consumo do veículo.</span>
+            </div>
+          )}
+        </>)}
+      </div>
+
+      <button
+        disabled={!valido}
+        onClick={() => {
+          const payload = { id: dado?.id, veiculoId, descricao: descricao.trim(), combustivel, data, km: nKm, litros: nLitros, precoLitro: precoMil / 1000, valorTotal: valor };
+          if (!jaTemDespesa) {
+            payload.gerarDespesa = gerarDespesa;
+            payload.pagamento = gerarDespesa ? { origemTipo, origemId, parcelas: nParcelas, vencimento, categoriaId: categoriaId || null, subcategoriaId: categoriaId ? (subcategoriaId || null) : null, jaPaga: origemTipo === "conta" && jaPaga } : null;
+          }
+          onSave(payload);
+        }}
+        style={{ ...btnPrimary(t), width: "100%", justifyContent: "center", opacity: valido ? 1 : 0.6 }}
+      >
+        {lancando ? <><Receipt size={15} /> Salvar e lançar despesa {valor > 0 ? fmtBRL(valor) : ""}</> : <><Check size={15} /> {jaTemDespesa ? "Salvar abastecimento" : "Salvar sem gerar despesa"}</>}
+      </button>
+    </ModalShell>
   );
 }
 
